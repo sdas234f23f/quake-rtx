@@ -50,6 +50,12 @@ VkDeviceMemory		GL_HeapGetAllocationMemory (glheapallocation_t *allocation);
 VkDeviceSize		GL_HeapGetAllocationOffset (glheapallocation_t *allocation);
 glheapstats_t	   *GL_HeapGetStats (glheap_t *heap);
 
+// q2rtx: RT renderer scratch helpers
+int			  RT_GetFanIndexCount (int vertexcount);
+const uint32_t *RT_GetFanIndices (int vertexcount);
+void		  *RT_AllocScratchMemory (size_t bytecount);
+void		  *RT_AllocScratchMemoryNulled (size_t bytecount);
+
 #ifdef _DEBUG
 void GL_HeapTest_f (void);
 #endif

@@ -1012,6 +1012,10 @@ static inline uint32_t RT_PackColorToUint32_FromFloat01(float r, float g, float 
 		(dst)[2] = (z);           \
 	} while (0)
 
+#define DRAW_GL_POLY_TYPE_SKY		   1
+#define DRAW_GL_POLY_TYPE_SHOWTRI	   2
+#define DRAW_GL_POLY_TYPE_SHOWTRI_NODEPTH 3
+
 #define QUAKEUNIT_IN_METERS    0.025f
 #define QUAKEUNIT_TO_METRIC(x) ((x)*QUAKEUNIT_IN_METERS)
 #define METRIC_TO_QUAKEUNIT(x) ((x) / QUAKEUNIT_IN_METERS)
@@ -1122,6 +1126,10 @@ typedef struct rt_cb_context_s
 	int       batch_verts_count;
 	int       batch_indices_count;
 } rt_cb_context_t;
+
+// q2rtx: RT renderer version of DrawGLPoly (defined in r_brush.c)
+void DrawGLPoly_RT (
+	rt_cb_context_t *cbx, uint64_t uniqueid, glpoly_t *p, float color[3], float alpha, const RgTransform *transform, const gltexture_t *tex, uint32_t type);
 
 typedef struct
 {

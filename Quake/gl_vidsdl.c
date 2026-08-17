@@ -1239,9 +1239,9 @@ static void RT_GL_InitInstance (void)
 
 	Cmd_AddCommand ("rt_pfnreloadshaders", RT_ReloadShaders);
 	Cmd_AddCommand ("rt_pfnswitch", RT_SwitchRenderer);
-	// TODO(rt-port): rt_pfnwlight_add/remove + rt_pfnportal are registered
-	// here in vkquake-rt; add them once the game-side light/portal commands
-	// (gl_rlight.c / r_world.c) are ported.
+	Cmd_AddCommand ("rt_pfnwlight_add", RT_CustomLights_AddCmd);
+	Cmd_AddCommand ("rt_pfnwlight_remove", RT_CustomLights_RemoveCmd);
+	Cmd_AddCommand ("rt_pfnportal", RT_PrintNearestPortal);
 	Cmd_AddCommand ("rt_water_color", RT_WaterColor);
 	Cmd_AddCommand ("rt_water_acidcolor", RT_AcidColor);
 	Cmd_AddCommand ("fog", RT_Fog_Cmd);

@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // r_brush.c: brush model rendering. renamed from r_surf.c
 
 #include "quakedef.h"
+#include "gl_heap.h"
 
 extern cvar_t gl_fullbrights, r_drawflat, r_gpulightmapupdate, r_rtshadows;
 
@@ -256,6 +257,19 @@ static void R_AllocateTLAS (void)
 
 extern cvar_t r_showtris;
 extern cvar_t r_simd;
+
+extern cvar_t rt_classic_render;
+extern cvar_t rt_brush_rough;
+extern cvar_t rt_brush_metal;
+
+// q2rtx: RT renderer brush model vertices (RgVertex layout)
+RgVertex *rtallbrushvertices;
+
+// Surface -> BSP leaf ("cluster") map for the world model, used by the
+// Q2RTX per-cluster light lists. The vertex's cluster is written into
+// RgVertex.cluster; the direct/indirect passes look up the cluster's light
+// list by it (like Q2RTX reads triangle.cluster).
+static int *rt_surfcluster;
 typedef struct lm_compute_surface_data_s
 {
 	uint32_t packed_lightstyles;
@@ -497,6 +511,184 @@ texture_t *R_TextureAnimation (texture_t *base, int frame)
 	}
 
 	return base;
+}
+
+/*
+=================
+RT_GetSurfaceCluster
+
+Returns the BSP leaf index (used as the Q2RTX "cluster") for a brush surface.
+World surfaces use the exact leaf from rt_surfcluster; other brush models
+(doors, plats, ...) get the leaf containing their surface centroid.
+=================
+*/
+static int RT_GetSurfaceCluster (const qmodel_t *m, const msurface_t *s)
+{
+	if (m == cl.worldmodel && rt_surfcluster)
+	{
+		const int si = (int)(s - m->surfaces);
+		if (si >= 0 && si < m->numsurfaces)
+			return rt_surfcluster[si];
+	}
+
+	vec3_t centroid = { 0, 0, 0 };
+	for (int v = 0; v < s->numedges; v++)
+	{
+		const float *svptr = s->polys->verts[v];
+		centroid[0] += svptr[0];
+		centroid[1] += svptr[1];
+		centroid[2] += svptr[2];
+	}
+	if (s->numedges > 0)
+	{
+		centroid[0] /= s->numedges;
+		centroid[1] /= s->numedges;
+		centroid[2] /= s->numedges;
+	}
+
+	mleaf_t *leaf = Mod_PointInLeaf (centroid, cl.worldmodel);
+	if (leaf)
+		return (int)(leaf - cl.worldmodel->leafs);
+	return 0;
+}
+
+/*
+=================
+RT_BuildSurfaceClusterMap
+
+Builds rt_surfcluster: for every world surface, the index of the BSP leaf
+it belongs to. Exact assignment comes from each leaf's marksurfaces; the
+surface-centroid lookup is only a fallback.
+=================
+*/
+static void RT_BuildSurfaceClusterMap (void)
+{
+	qmodel_t *wm = cl.worldmodel;
+	if (!wm)
+		return;
+
+	if (rt_surfcluster)
+	{
+		Mem_Free (rt_surfcluster);
+		rt_surfcluster = NULL;
+	}
+
+	rt_surfcluster = (int *)Mem_Alloc (sizeof (int) * wm->numsurfaces);
+	if (!rt_surfcluster)
+		return;
+
+	for (int i = 0; i < wm->numsurfaces; i++)
+		rt_surfcluster[i] = RT_GetSurfaceCluster (wm, &wm->surfaces[i]);
+
+	// Exact assignment: every leaf marks its own surfaces.
+	for (int l = 0; l < wm->numleafs; l++)
+	{
+		const mleaf_t *leaf = &wm->leafs[l];
+		for (int j = 0; j < leaf->nummarksurfaces; j++)
+		{
+			const int si = leaf->firstmarksurface[j];
+			if (si >= 0 && si < wm->numsurfaces)
+				rt_surfcluster[si] = l;
+		}
+	}
+}
+
+/*
+================
+DrawGLPoly_RT
+
+RT renderer version of DrawGLPoly: uploads the poly as rasterized or ray-
+traced geometry (sky polys, showtris, ...).
+================
+*/
+void DrawGLPoly_RT (
+	rt_cb_context_t *cbx, uint64_t uniqueid,
+	glpoly_t *p, float color[3], float alpha,
+	const RgTransform *transform, const gltexture_t *tex, uint32_t type)
+{
+	const int numverts = p->numverts;
+
+	RgVertex *vertices = RT_AllocScratchMemoryNulled (numverts * sizeof (RgVertex));
+
+	float *v = p->verts[0];
+	for (int i = 0; i < numverts; ++i, v += VERTEXSIZE)
+	{
+		vertices[i].position[0] = v[0];
+		vertices[i].position[1] = v[1];
+		vertices[i].position[2] = v[2];
+		vertices[i].texCoord[0] = v[3];
+		vertices[i].texCoord[1] = v[4];
+		vertices[i].packedColor = RT_PACKED_COLOR_WHITE;
+	}
+
+	const qboolean is_sky = (type == DRAW_GL_POLY_TYPE_SKY);
+	const qboolean showtri_nodepth = (type == DRAW_GL_POLY_TYPE_SHOWTRI_NODEPTH);
+	const qboolean showtri = (type == DRAW_GL_POLY_TYPE_SHOWTRI) || showtri_nodepth;
+
+	// mutually exclusive
+	if (!is_sky && !showtri && !showtri_nodepth)
+	{
+		assert (0);
+		return;
+	}
+
+	qboolean rasterize = !is_sky && showtri;
+
+	if (rasterize)
+	{
+		RgRasterizedGeometryUploadInfo info = {
+			.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_DEFAULT,
+			.vertexCount = numverts,
+			.pVertices = vertices,
+			.indexCount = RT_GetFanIndexCount (numverts),
+			.pIndices = RT_GetFanIndices (numverts),
+			.transform = *transform,
+			.color = {color[0], color[1], color[2], alpha},
+			.material = tex ? tex->rtmaterial : RG_NO_MATERIAL,
+			.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_DEPTH_TEST | RG_RASTERIZED_GEOMETRY_STATE_DEPTH_WRITE,
+			.blendFuncSrc = 0,
+			.blendFuncDst = 0,
+		};
+
+		if (showtri_nodepth)
+		{
+			info.pipelineState = 0;
+		}
+		if (alpha < 1.0f)
+		{
+			info.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_DEPTH_TEST | RG_RASTERIZED_GEOMETRY_STATE_BLEND_ENABLE;
+
+			info.blendFuncSrc = RG_BLEND_FACTOR_SRC_ALPHA;
+			info.blendFuncDst = RG_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+		}
+
+		RgResult r = rgUploadRasterizedGeometry (vulkan_globals_rt.instance, &info, NULL, NULL);
+		RG_CHECK (r);
+	}
+	else
+	{
+		RgGeometryUploadInfo info = {
+			.uniqueID = uniqueid,
+			.flags = RG_GEOMETRY_UPLOAD_GENERATE_NORMALS_BIT,
+			.geomType = RG_GEOMETRY_TYPE_DYNAMIC,
+			.passThroughType = RG_GEOMETRY_PASS_THROUGH_TYPE_OPAQUE,
+			.visibilityType = is_sky ? RG_GEOMETRY_VISIBILITY_TYPE_SKY : RG_GEOMETRY_VISIBILITY_TYPE_WORLD_0,
+			.vertexCount = numverts,
+			.pVertices = vertices,
+			.indexCount = RT_GetFanIndexCount (numverts),
+			.pIndices = RT_GetFanIndices (numverts),
+			.layerColors = {{color[0], color[1], color[2], alpha}},
+			.layerBlendingTypes = {RG_GEOMETRY_MATERIAL_BLEND_TYPE_OPAQUE},
+			.geomMaterial = {tex ? tex->rtmaterial : RG_NO_MATERIAL},
+			.defaultRoughness = CVAR_TO_FLOAT (rt_brush_rough),
+			.defaultMetallicity = CVAR_TO_FLOAT (rt_brush_metal),
+			.defaultEmission = 0,
+			.transform = *transform,
+		};
+
+		RgResult r = rgUploadGeometry (vulkan_globals_rt.instance, &info);
+		RG_CHECK (r);
+	}
 }
 
 /*
@@ -2385,6 +2577,16 @@ GL_DeleteBModelVertexBuffer
 void GL_DeleteBModelVertexBuffer (void)
 {
 	GL_WaitForDeviceIdle ();
+
+	// q2rtx: RT renderer surface clusters and vertex array
+	Mem_Free (rtallbrushvertices);
+	rtallbrushvertices = NULL;
+	Mem_Free (rt_surfcluster);
+	rt_surfcluster = NULL;
+
+	if (CVAR_TO_BOOL (rt_renderer))
+		return;
+
 	R_FreeBuffer (bmodel_vertex_buffer, &bmodel_memory, &num_vulkan_bmodel_allocations);
 	R_FreeBuffer (vertex_submodels_buffer, &vertex_submodels_buffer_memory, &num_vulkan_bmodel_allocations);
 }
@@ -2446,6 +2648,75 @@ void GL_BuildBModelVertexBuffer (void)
 	unsigned int varray_bytes;
 	int			 i, j;
 	qmodel_t	*m;
+
+	// q2rtx: build the RT renderer's RgVertex array + cluster map instead
+	if (CVAR_TO_BOOL (rt_renderer))
+	{
+		RT_BuildSurfaceClusterMap ();
+
+		// count all verts in all models
+		int numverts = 0;
+		for (j = 1; j < MAX_MODELS; j++)
+		{
+			m = cl.model_precache[j];
+
+			if (!m || m->name[0] == '*' || m->type != mod_brush)
+				continue;
+
+			for (i = 0; i < m->numsurfaces; i++)
+			{
+				numverts += m->surfaces[i].numedges;
+			}
+		}
+
+		rtallbrushvertices = Mem_Alloc (sizeof (RgVertex) * numverts);
+		memset (rtallbrushvertices, 0, sizeof (RgVertex) * numverts);
+
+		int varray_index = 0;
+		for (j = 1; j < MAX_MODELS; j++)
+		{
+			m = cl.model_precache[j];
+
+			if (!m || m->name[0] == '*' || m->type != mod_brush)
+				continue;
+
+			for (i = 0; i < m->numsurfaces; i++)
+			{
+				msurface_t *s = &m->surfaces[i];
+
+				s->vbo_firstvert = varray_index;
+
+				RgVertex *const dst = &rtallbrushvertices[varray_index];
+
+				for (int v = 0; v < s->numedges; v++)
+				{
+					const float *srcv = s->polys->verts[v];
+
+					// xyz
+					dst[v].position[0] = srcv[0];
+					dst[v].position[1] = srcv[1];
+					dst[v].position[2] = srcv[2];
+
+					// s1t1
+					dst[v].texCoord[0] = srcv[3];
+					dst[v].texCoord[1] = srcv[4];
+
+					// s2t2
+					dst[v].texCoordLayer1[0] = srcv[5];
+					dst[v].texCoordLayer1[1] = srcv[6];
+
+					dst[v].packedColor = RT_PACKED_COLOR_WHITE;
+
+					// Q2RTX per-cluster light lists: BSP leaf index of the surface.
+					dst[v].cluster = (uint32_t)RT_GetSurfaceCluster (m, s);
+				}
+
+				varray_index += s->numedges;
+			}
+		}
+
+		return;
+	}
 
 	// count all verts in all models
 	bmodel_numverts = 0;

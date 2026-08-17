@@ -26,6 +26,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "atomics.h"
 
 int r_visframecount; // bumped when going to a new PVS
+
+// q2rtx: set when the world static geometry must be re-submitted (map load)
+atomic_uint32_t rt_require_static_submit;
 int r_framecount;	 // used for dlight push checking
 
 mplane_t frustum[4];

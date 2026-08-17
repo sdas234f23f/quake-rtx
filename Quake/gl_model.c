@@ -25,6 +25,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // on the same machine.
 
 #include "quakedef.h"
+#include "rt_material.h"
 
 // q2rtx: RT renderer brush/model default material properties
 extern cvar_t rt_brush_metal;
@@ -3128,6 +3129,11 @@ static void Mod_LoadBrushModel (qmodel_t *mod, const char *loadname, void *buffe
 
 	mod->type = mod_brush;
 	mod->is_worldmodel = (sv.modelname[0] && !q_strcasecmp (loadname, sv.name));
+
+	// q2rtx: map-specific .mat materials must be loaded before the world
+	// textures are uploaded (TexMgr applies them in the RT upload path)
+	if (mod->is_worldmodel && CVAR_TO_BOOL (rt_renderer))
+		RT_MAT_ChangeMap (loadname);
 
 	header = (dheader_t *)buffer;
 

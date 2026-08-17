@@ -1237,6 +1237,1381 @@ float GL_WaterAlphaForEntityTextureType (entity_t *ent, textype_t type)
 	return entalpha;
 }
 
+// ============================================================================
+// q2rtx: RT renderer world drawing (ported from vkquake-rt)
+// ============================================================================
+
+extern RgVertex *rtallbrushvertices;
+
+extern cvar_t rt_classic_render;
+extern cvar_t rt_plight_intensity;
+extern cvar_t rt_plight_radius;
+extern cvar_t rt_wlight_intensity;
+extern cvar_t rt_wlight_radius;
+extern cvar_t rt_brush_rough;
+extern cvar_t rt_brush_metal;
+extern cvar_t rt_reflrefr_depth;
+
+// quadrilateral area-light shapes on the floor/wall grid are converted to
+// spherical lights
+#define RT_USE_SPHERE_INSTEAD_OF_POLY 1
+
+#define MAX_WORLDLIGHTS_COUNT 2048
+static RgPolygonalLightUploadInfo rt_wldlights_tri[MAX_WORLDLIGHTS_COUNT];
+static int                        rt_wldlights_tri_count = 0;
+static RgSphericalLightUploadInfo rt_wldlights_sph[MAX_WORLDLIGHTS_COUNT];
+static int                        rt_wldlights_sph_count = 0;
+
+#if RT_USE_SPHERE_INSTEAD_OF_POLY
+static RgPolygonalLightUploadInfo rt_tempbuffer[512];
+#endif
+
+#define RT_CUSTOMLIGHTS_PATH RT_OVERRIDEN_FOLDER "world_custom_lights.txt"
+typedef struct rt_worldcustomlight_t
+{
+	char      mapname[64];
+	// color is in [0,1]
+	RgFloat3D color01;
+	RgFloat3D position;
+	qboolean  deleted;
+} rt_worldcustomlight_t;
+static rt_worldcustomlight_t *rt_customlights_all = NULL;
+static int                    rt_customlights_all_count = 0;
+static int                   *rt_customlights_curr = NULL;
+static int                    rt_customlights_curr_count = 0;
+
+#define RT_CUSTOMPORTALS_PATH RT_OVERRIDEN_FOLDER "world_custom_portals.txt"
+
+typedef struct rt_uploadsurf_state_t
+{
+	int          entuniqueid;
+	entity_t    *ent;
+	qmodel_t    *model;
+	msurface_t  *surf;
+	gltexture_t *diffuse_tex;
+	gltexture_t *lightmap_tex;
+	qboolean     alpha_test;
+	float        alpha;
+	qboolean     use_zbias;
+	qboolean     is_warp;
+	qboolean     is_water;
+	qboolean     is_acid;
+	qboolean     is_teleport;
+} rt_uploadsurf_state_t;
+
+static qboolean  RT_FindNearestTeleport (const RgGeometryUploadInfo *info, uint8_t *result, qboolean *potentially_mirror);
+static RgFloat3D ApplyTransform (const RgTransform *transform, const vec3_t v);
+static void      PolyToSphericalLights (const RgPolygonalLightUploadInfo *polys, int count, qboolean upload);
+
+static void RT_ClearBatch (rt_cb_context_t *cbx)
+{
+	cbx->batch_verts_count = 0;
+	cbx->batch_indices_count = 0;
+}
+
+RgTransform RT_GetBrushModelMatrix (entity_t *e)
+{
+	if (e == NULL)
+	{
+		const static RgTransform identity = RT_TRANSFORM_IDENTITY;
+		return identity;
+	}
+
+	vec3_t e_angles;
+	VectorCopy (e->angles, e_angles);
+	e_angles[0] = -e_angles[0]; // stupid quake bug
+
+	float model_matrix[16];
+	IdentityMatrix (model_matrix);
+	R_RotateForEntity (model_matrix, e->origin, e_angles, ENTSCALE_DEFAULT);
+
+	return RT_GetModelTransform (model_matrix);
+}
+
+static void AccumulateCenterAndNormal (const RgPolygonalLightUploadInfo *src, vec3_t inout_center, vec3_t inout_normal)
+{
+	vec3_t local_center = {0, 0, 0};
+
+	const float *a = src->positions[0].data;
+	const float *b = src->positions[1].data;
+	const float *c = src->positions[2].data;
+
+	VectorAdd (local_center, a, local_center);
+	VectorAdd (local_center, b, local_center);
+	VectorAdd (local_center, c, local_center);
+	VectorScale (local_center, 1.0f / 3.0f, local_center);
+
+	vec3_t e1, e2;
+	VectorSubtract (b, a, e1);
+	VectorSubtract (c, a, e2);
+	VectorNormalize (e1);
+	VectorNormalize (e2);
+
+	vec3_t local_normal;
+	CrossProduct (e1, e2, local_normal);
+
+	VectorAdd (inout_center, local_center, inout_center);
+	VectorAdd (inout_normal, local_normal, inout_normal);
+}
+
+static qboolean HaveSharedEdge (const RgPolygonalLightUploadInfo *poly_a, const RgPolygonalLightUploadInfo *poly_b)
+{
+	for (int e = 0; e < 3; e++)
+	{
+		const RgFloat3D *edge_cur[2] = {
+			&poly_a->positions[(e + 0) % 3],
+			&poly_a->positions[(e + 1) % 3],
+		};
+
+		for (int ek = 0; ek < 3; ek++)
+		{
+			const RgFloat3D *edge_prev[2] = {
+				&poly_b->positions[(ek + 0) % 3],
+				&poly_b->positions[(ek + 1) % 3],
+			};
+
+			const float threshold = 0.1f;
+
+			float l0 = VectorLengthSquared (edge_cur[0]->data, edge_prev[0]->data);
+			float l1 = VectorLengthSquared (edge_cur[1]->data, edge_prev[1]->data);
+
+			float r0 = VectorLengthSquared (edge_cur[0]->data, edge_prev[1]->data);
+			float r1 = VectorLengthSquared (edge_cur[1]->data, edge_prev[0]->data);
+
+			if ((l0 < threshold && l1 < threshold) || (r0 < threshold && r1 < threshold))
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+static void RT_FlushBatch (rt_cb_context_t *cbx, const rt_uploadsurf_state_t *s, uint32_t *brushpasses)
+{
+	if (cbx->batch_verts_count == 0 || cbx->batch_indices_count == 0)
+	{
+		return;
+	}
+
+	const RgVertex *vertices = cbx->batch_verts;
+	const uint32_t *indices = cbx->batch_indices;
+	const int       num_surf_verts = cbx->batch_verts_count;
+	const int       num_surf_indices = cbx->batch_indices_count;
+
+	// i.e. uploaded once at the level load
+	const qboolean is_static_geom = (s->model == cl.worldmodel) && !s->is_warp;
+
+	gltexture_t *diffuse_tex = r_lightmap_cheatsafe ? NULL : s->diffuse_tex;
+	gltexture_t *lightmap_tex = r_fullbright_cheatsafe ? NULL : s->lightmap_tex;
+
+	// The classic lightmap (static baked light + dynamic dlight patches) is
+	// applied as a SHADE layer on top of the RT albedo. In the RT renderer the
+	// ray tracer produces ALL the lighting (Q2RTX model), so the classic
+	// lightmap must not be part of the RT material.
+	if (!CVAR_TO_BOOL (rt_classic_render))
+	{
+		lightmap_tex = NULL;
+	}
+
+	// Curated poly light textures (@POLY_LIGHT, e.g. *light*) become light
+	// sources; with RT_USE_SPHERE_INSTEAD_OF_POLY they are converted to sphere
+	// lights.
+	const qboolean is_poly_light = diffuse_tex && diffuse_tex->rtcustomtextype == RT_CUSTOMTEXTUREINFO_TYPE_POLY_LIGHT;
+
+	if (is_poly_light)
+	{
+		const RgTransform transf = RT_GetBrushModelMatrix (s->ent);
+
+		vec3_t color;
+		VectorCopy (diffuse_tex->rtlightcolor, color);
+		VectorScale (color, CVAR_TO_FLOAT (rt_plight_intensity), color);
+		RT_FIXUP_LIGHT_INTENSITY (color, true);
+
+		for (int tri = 0; tri < num_surf_indices / 3; tri++)
+		{
+			const vec_t *a0 = vertices[indices[tri * 3 + 0]].position;
+			const vec_t *a1 = vertices[indices[tri * 3 + 1]].position;
+			const vec_t *a2 = vertices[indices[tri * 3 + 2]].position;
+
+			RgPolygonalLightUploadInfo light_info = {
+				.uniqueID = RT_GetBrushSurfUniqueId (s->entuniqueid, s->model, s->surf, tri),
+				.color = RT_VEC3 (color),
+				.positions =
+					{
+						ApplyTransform (&transf, a0),
+						ApplyTransform (&transf, a1),
+						ApplyTransform (&transf, a2),
+					},
+			};
+
+			if (!is_static_geom)
+			{
+#if RT_USE_SPHERE_INSTEAD_OF_POLY
+				if (tri < (int)countof (rt_tempbuffer))
+				{
+					rt_tempbuffer[tri] = light_info;
+				}
+				else
+				{
+					assert (false);
+				}
+#else
+				RgResult r = rgUploadPolygonalLight (vulkan_globals_rt.instance, &light_info);
+				RG_CHECK (r);
+#endif
+			}
+			else
+			{
+				// if it's a static geometry, then save light data
+				// to upload it each frame
+				if (rt_wldlights_tri_count < MAX_WORLDLIGHTS_COUNT)
+				{
+					rt_wldlights_tri[rt_wldlights_tri_count++] = light_info;
+				}
+				else
+				{
+					// overflow: skip (don't assert - large maps may exceed the cap)
+				}
+			}
+		}
+
+#if RT_USE_SPHERE_INSTEAD_OF_POLY
+		if (!is_static_geom)
+		{
+			PolyToSphericalLights (rt_tempbuffer, num_surf_indices / 3, true);
+		}
+#endif
+	}
+
+	if (s->is_teleport && !CVAR_TO_BOOL (rt_classic_render) && CVAR_TO_INT32 (rt_reflrefr_depth) > 0)
+	{
+		diffuse_tex = NULL;
+	}
+
+	float alpha = CLAMP (0.0f, s->alpha, 1.0f);
+	uint8_t portalindex = 0;
+
+	qboolean is_mirror = diffuse_tex && diffuse_tex->rtcustomtextype == RT_CUSTOMTEXTUREINFO_TYPE_MIRROR;
+	qboolean rasterize = (alpha < 1.0f) && !s->is_warp;
+
+	if (rasterize)
+	{
+		// worldmodel must be uploaded only once
+		assert (!is_static_geom);
+
+		RgRasterizedGeometryUploadInfo info = {
+			.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_DEFAULT,
+			.vertexCount = num_surf_verts,
+			.pVertices = vertices,
+			.indexCount = num_surf_indices,
+			.pIndices = indices,
+			.transform = RT_GetBrushModelMatrix (s->ent),
+			.color = RT_COLOR_WHITE,
+			.material = diffuse_tex ? diffuse_tex->rtmaterial : greytexture->rtmaterial,
+			.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_DEPTH_TEST,
+			.blendFuncSrc = 0,
+			.blendFuncDst = 0,
+		};
+
+		if (s->alpha_test)
+		{
+			info.pipelineState |= RG_RASTERIZED_GEOMETRY_STATE_ALPHA_TEST;
+		}
+
+		if (alpha < 1.0f)
+		{
+			info.color.data[3] = alpha;
+			info.pipelineState |= RG_RASTERIZED_GEOMETRY_STATE_BLEND_ENABLE;
+			info.blendFuncSrc = RG_BLEND_FACTOR_SRC_ALPHA;
+			info.blendFuncDst = RG_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+		}
+		else
+		{
+			info.pipelineState |= RG_RASTERIZED_GEOMETRY_STATE_DEPTH_WRITE;
+		}
+
+		RgResult r = rgUploadRasterizedGeometry (vulkan_globals_rt.instance, &info, NULL, NULL);
+		RG_CHECK (r);
+	}
+	else
+	{
+		RgGeometryUploadInfo info = {
+			.uniqueID = RT_GetBrushSurfUniqueId (s->entuniqueid, s->model, s->surf, 0),
+			.flags =
+				(is_mirror ? RG_GEOMETRY_UPLOAD_REFL_REFR_ALBEDO_MULTIPLY_BIT : 0) |
+				(s->is_teleport && !CVAR_TO_BOOL (rt_classic_render) ? RG_GEOMETRY_UPLOAD_REFL_REFR_ALBEDO_ADD_BIT : 0) |
+				RG_GEOMETRY_UPLOAD_GENERATE_NORMALS_BIT,
+			.geomType = is_static_geom ? RG_GEOMETRY_TYPE_STATIC : RG_GEOMETRY_TYPE_DYNAMIC,
+			.passThroughType =
+				(s->is_teleport && CVAR_TO_BOOL (rt_classic_render)) ? RG_GEOMETRY_PASS_THROUGH_TYPE_OPAQUE :
+				is_mirror ? RG_GEOMETRY_PASS_THROUGH_TYPE_MIRROR :
+				s->is_water ? RG_GEOMETRY_PASS_THROUGH_TYPE_WATER_REFLECT_REFRACT :
+				s->is_acid ? RG_GEOMETRY_PASS_THROUGH_TYPE_ACID_REFLECT_REFRACT :
+				s->is_teleport ? RG_GEOMETRY_PASS_THROUGH_TYPE_PORTAL :
+				RG_GEOMETRY_PASS_THROUGH_TYPE_OPAQUE,
+			.visibilityType = RG_GEOMETRY_VISIBILITY_TYPE_WORLD_0,
+			.vertexCount = num_surf_verts,
+			.pVertices = vertices,
+			.indexCount = num_surf_indices,
+			.pIndices = indices,
+			.layerColors =
+				{
+					RT_COLOR_WHITE,
+					RT_COLOR_WHITE,
+				},
+			.layerBlendingTypes =
+				{
+					RG_GEOMETRY_MATERIAL_BLEND_TYPE_OPAQUE,
+					lightmap_tex ? RG_GEOMETRY_MATERIAL_BLEND_TYPE_SHADE : 0,
+				},
+			.geomMaterial =
+				{
+					diffuse_tex ? diffuse_tex->rtmaterial : greytexture->rtmaterial,
+					lightmap_tex ? lightmap_tex->rtmaterial : RG_NO_MATERIAL,
+				},
+			.defaultRoughness = CVAR_TO_FLOAT (rt_brush_rough),
+			.defaultMetallicity = CVAR_TO_FLOAT (rt_brush_metal),
+			.defaultEmission = 0,
+			.transform = RT_GetBrushModelMatrix (s->ent),
+		};
+
+		if (s->is_teleport && !CVAR_TO_BOOL (rt_classic_render))
+		{
+			qboolean portal_is_mirror = false;
+
+			if (RT_FindNearestTeleport (&info, &portalindex, &portal_is_mirror))
+			{
+				if (portal_is_mirror)
+				{
+					info.passThroughType = RG_GEOMETRY_PASS_THROUGH_TYPE_MIRROR;
+				}
+				else
+				{
+					info.pPortalIndex = &portalindex;
+				}
+			}
+		}
+
+		RgResult r = rgUploadGeometry (vulkan_globals_rt.instance, &info);
+		RG_CHECK (r);
+	}
+
+	RT_ClearBatch (cbx);
+	++(*brushpasses);
+}
+
+static void RT_BatchSurface (rt_cb_context_t *cbx, const rt_uploadsurf_state_t *s, uint32_t *brushpasses)
+{
+	int num_surf_verts = s->surf->numedges;
+	int num_surf_indices = q_max (0, 3 * (num_surf_verts - 2));
+
+	if (cbx->batch_indices_count + num_surf_indices > MAX_BATCH_INDICES ||
+		cbx->batch_verts_count + num_surf_verts > MAX_BATCH_VERTS)
+	{
+		RT_FlushBatch (cbx, s, brushpasses);
+	}
+
+	// fan triangulation, like R_TriangleIndicesForSurf
+	uint32_t *dest = &cbx->batch_indices[cbx->batch_indices_count];
+	for (int i = 2; i < num_surf_verts; i++)
+	{
+		*dest++ = cbx->batch_verts_count + i;
+		*dest++ = cbx->batch_verts_count + i - 1;
+		*dest++ = cbx->batch_verts_count;
+	}
+
+	memcpy (&cbx->batch_verts[cbx->batch_verts_count], rtallbrushvertices + s->surf->vbo_firstvert, sizeof (RgVertex) * num_surf_verts);
+
+	cbx->batch_indices_count += num_surf_indices;
+	cbx->batch_verts_count += num_surf_verts;
+}
+
+/*
+================
+GL_WaterAlphaForEntitySurface -- ericw
+
+Returns the water alpha to use for the entity and surface combination.
+================
+*/
+float GL_WaterAlphaForEntitySurface (entity_t *ent, msurface_t *s)
+{
+	float entalpha;
+	if (r_lightmap_cheatsafe)
+		entalpha = 1;
+	else if (ent == NULL || ent->alpha == ENTALPHA_DEFAULT)
+		entalpha = GL_WaterAlphaForSurface (s);
+	else
+		entalpha = ENTALPHA_DECODE (ent->alpha);
+	return entalpha;
+}
+
+void RT_DrawTextureChains_ShowTris (rt_cb_context_t *cbx, qmodel_t *model, texchain_t chain)
+{
+	int         i;
+	msurface_t *s;
+	texture_t  *t;
+	float       color[] = {1.0f, 1.0f, 1.0f};
+	const float alpha = 1.0f;
+
+	const static RgTransform tr = RT_TRANSFORM_IDENTITY;
+
+	for (i = 0; i < model->numtextures; i++)
+	{
+		t = model->textures[i];
+		if (!t)
+			continue;
+
+		for (s = t->texturechains[chain]; s; s = s->texturechains[chain])
+			DrawGLPoly_RT (
+				cbx, RT_UNIQUEID_DONTCARE,
+				s->polys, color, alpha,
+				&tr, NULL,
+				CVAR_TO_BOOL (r_showtris) ? DRAW_GL_POLY_TYPE_SHOWTRI : DRAW_GL_POLY_TYPE_SHOWTRI_NODEPTH);
+	}
+}
+
+void RT_DrawTextureChains_Water (rt_cb_context_t *cbx, qmodel_t *model, entity_t *ent, texchain_t chain, int entuniqueid)
+{
+	int                   i;
+	msurface_t           *s;
+	texture_t            *t;
+	rt_uploadsurf_state_t last_state = {0};
+
+	uint32_t brushpasses = 0;
+	for (i = 0; i < model->numtextures; ++i)
+	{
+		t = model->textures[i];
+
+		if (!t || !t->texturechains[chain] || !(t->texturechains[chain]->flags & SURF_DRAWTURB))
+			continue;
+
+		RT_ClearBatch (cbx);
+
+		for (s = t->texturechains[chain]; s; s = s->texturechains[chain])
+		{
+			if (model != cl.worldmodel)
+			{
+				// ericw -- this is copied from R_DrawSequentialPoly.
+				// If the poly is not part of the world we have to
+				// set this flag
+				Atomic_StoreUInt32 (&t->update_warp, true); // FIXME: one frame too late!
+			}
+
+			rt_uploadsurf_state_t cur_state = {
+				.entuniqueid = entuniqueid,
+				.ent = ent,
+				.model = model,
+				.surf = s,
+				.diffuse_tex = t->gltexture,
+				.lightmap_tex = (s->lightmaptexturenum >= 0) ? lightmaps[s->lightmaptexturenum].texture : greytexture,
+				.alpha_test = false,
+				.alpha = GL_WaterAlphaForEntitySurface (ent, s),
+				.use_zbias = false,
+				.is_warp = true,
+				.is_water = s->flags & SURF_DRAWWATER,
+				.is_acid = s->flags & SURF_DRAWSLIME,
+				.is_teleport = (s->flags & SURF_DRAWTELE),
+			};
+
+			if (cur_state.lightmap_tex != last_state.lightmap_tex ||
+				fabsf (cur_state.alpha - last_state.alpha) < 0.001f)
+			{
+				RT_FlushBatch (cbx, &last_state, &brushpasses);
+			}
+
+			RT_BatchSurface (cbx, &cur_state, &brushpasses);
+			last_state = cur_state;
+		}
+
+		RT_FlushBatch (cbx, &last_state, &brushpasses);
+	}
+
+	Atomic_AddUInt32 (&rs_brushpasses, brushpasses);
+}
+
+void RT_DrawTextureChains_Multitexture (
+	rt_cb_context_t *cbx, qmodel_t *model, entity_t *ent, texchain_t chain, const float alpha, int texstart, int texend, int entuniqueid)
+{
+	int                   i;
+	msurface_t           *s;
+	texture_t            *t;
+	qboolean              use_zbias = (gl_zfix.value && model != cl.worldmodel);
+	int                   ent_frame = ent != NULL ? ent->frame : 0;
+	rt_uploadsurf_state_t last_state = {0};
+
+	uint32_t brushpasses = 0;
+	for (i = texstart; i < texend; ++i)
+	{
+		t = model->textures[i];
+
+		if (!t || !t->texturechains[chain] || t->texturechains[chain]->flags & (SURF_DRAWTURB | SURF_DRAWTILED | SURF_NOTEXTURE))
+			continue;
+
+		RT_ClearBatch (cbx);
+
+		qboolean alpha_test = (t->texturechains[chain]->flags & SURF_DRAWFENCE) != 0;
+		gltexture_t *diffuse_tex = R_TextureAnimation (t, ent_frame)->gltexture;
+
+		for (s = t->texturechains[chain]; s; s = s->texturechains[chain])
+		{
+			// Sky surfaces are not ray-traced geometry: the sky is drawn to the
+			// sky cubemap by Sky_ProcessTextureChains / Sky_DrawSkySurface (which
+			// read chain_world directly). Skip them here.
+			if (s->flags & SURF_DRAWSKY)
+				continue;
+
+			rt_uploadsurf_state_t cur_state = {
+				.entuniqueid = entuniqueid,
+				.ent = ent,
+				.model = model,
+				.surf = s,
+				.diffuse_tex = diffuse_tex,
+				.lightmap_tex = (s->lightmaptexturenum >= 0) ? lightmaps[s->lightmaptexturenum].texture : greytexture,
+				.alpha_test = alpha_test,
+				.alpha = alpha,
+				.use_zbias = use_zbias,
+				.is_warp = false,
+				.is_water = false,
+				.is_acid = false,
+				.is_teleport = false,
+			};
+
+			if (cur_state.lightmap_tex != last_state.lightmap_tex)
+			{
+				RT_FlushBatch (cbx, &last_state, &brushpasses);
+			}
+
+			RT_BatchSurface (cbx, &cur_state, &brushpasses);
+			last_state = cur_state;
+		}
+
+		RT_FlushBatch (cbx, &last_state, &brushpasses);
+	}
+
+	Atomic_AddUInt32 (&rs_brushpasses, brushpasses);
+}
+
+#if RT_USE_SPHERE_INSTEAD_OF_POLY
+static void AddSphericalLight (qboolean upload, const RgPolygonalLightUploadInfo *src, vec3_t accum_center, vec3_t accum_normal, int sharing)
+{
+	VectorScale (accum_center, 1.0f / (float)sharing, accum_center);
+
+	float radius = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_plight_radius));
+
+	// The emission normal of the light surface. Degenerate (e.g. a box-like
+	// flame where opposite faces cancel) -> zero normal = full sphere.
+	RgFloat3D normal = {{0, 0, 0}};
+	if (VectorLength (accum_normal) > 0.001f)
+	{
+		VectorNormalize (accum_normal);
+		normal.data[0] = accum_normal[0];
+		normal.data[1] = accum_normal[1];
+		normal.data[2] = accum_normal[2];
+
+		VectorMA (accum_center, radius, accum_normal, accum_center);
+	}
+
+	RgSphericalLightUploadInfo light_info = {
+		.uniqueID = src->uniqueID,
+		.color = src->color,
+		.position = RT_VEC3 (accum_center),
+		.radius = radius,
+		.normal = normal,
+	};
+
+	if (upload)
+	{
+		RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &light_info);
+		RG_CHECK (r);
+	}
+	else
+	{
+		rt_wldlights_sph[rt_wldlights_sph_count++] = light_info;
+	}
+}
+
+static void PolyToSphericalLights (const RgPolygonalLightUploadInfo *polys, int count, qboolean upload)
+{
+	vec3_t accum_center = {0, 0, 0};
+	vec3_t accum_normal = {0, 0, 0};
+	int    sharing = 0;
+
+	for (int i = 1; i < count; i++)
+	{
+		const RgPolygonalLightUploadInfo *poly_prev = &polys[i - 1];
+		const RgPolygonalLightUploadInfo *poly_cur = &polys[i];
+
+		if (HaveSharedEdge (poly_prev, poly_cur))
+		{
+			if (sharing == 0)
+			{
+				AccumulateCenterAndNormal (poly_prev, accum_center, accum_normal);
+				sharing++;
+			}
+
+			AccumulateCenterAndNormal (poly_cur, accum_center, accum_normal);
+			sharing++;
+		}
+		else
+		{
+			if (sharing > 0)
+			{
+				AddSphericalLight (upload, poly_cur, accum_center, accum_normal, sharing);
+
+				RT_VEC3_SET (accum_center, 0, 0, 0);
+				RT_VEC3_SET (accum_normal, 0, 0, 0);
+			}
+
+			sharing = 0;
+		}
+	}
+
+	if (sharing > 0)
+	{
+		AddSphericalLight (upload, &polys[count - 1], accum_center, accum_normal, sharing);
+	}
+}
+#endif
+
+void RT_DrawWorld (rt_cb_context_t *cbx, int index)
+{
+	rt_wldlights_sph_count = 0;
+	rt_wldlights_tri_count = 0;
+
+	if (!r_drawworld_cheatsafe)
+		return;
+
+	if (!r_gpulightmapupdate.value)
+		R_UploadLightmaps ();
+	RT_DrawTextureChains_Multitexture (cbx, cl.worldmodel, NULL, chain_world, 1, world_texstart[index], world_texend[index], ENT_UNIQUEID_WORLD);
+
+#if RT_USE_SPHERE_INSTEAD_OF_POLY
+	PolyToSphericalLights (rt_wldlights_tri, rt_wldlights_tri_count, false);
+#endif
+}
+
+void RT_DrawWorld_Water (rt_cb_context_t *cbx)
+{
+	if (!r_drawworld_cheatsafe)
+		return;
+
+	RT_DrawTextureChains_Water (cbx, cl.worldmodel, NULL, chain_world, ENT_UNIQUEID_WORLD);
+}
+
+void RT_DrawWorld_ShowTris (rt_cb_context_t *cbx)
+{
+	if (!r_drawworld_cheatsafe)
+		return;
+
+	RT_DrawTextureChains_ShowTris (cbx, cl.worldmodel, chain_world);
+}
+
+void RT_CustomLights_Parse (void)
+{
+	rt_customlights_all_count = 0;
+	rt_customlights_curr_count = 0;
+
+	FILE *f = fopen (RT_CUSTOMLIGHTS_PATH, "r");
+	if (f == NULL)
+	{
+		Con_Printf ("Couldn't open %s\n", RT_CUSTOMLIGHTS_PATH);
+		return;
+	}
+
+	int alloccount = 1;
+	{
+		int ch = 0;
+		do
+		{
+			ch = fgetc (f);
+			if (ch == '\n')
+			{
+				alloccount++;
+			}
+		} while (ch != EOF);
+	}
+	rt_customlights_all = Mem_Realloc (rt_customlights_all, sizeof (rt_customlights_all[0]) * alloccount);
+	rt_customlights_curr = Mem_Realloc (rt_customlights_curr, sizeof (rt_customlights_curr[0]) * alloccount);
+	rewind (f);
+
+	qboolean foundend = false;
+	char     curline[256] = "";
+
+	while (!foundend)
+	{
+		{
+			int i = 0;
+
+			while (true)
+			{
+				int ch = fgetc (f);
+
+				if (ch == '\n' || ch == '\r' || ch == '\0' || ch == EOF)
+				{
+					foundend = (ch == '\0' || ch == EOF);
+					break;
+				}
+
+				if (i >= (int)sizeof (curline))
+				{
+					Sys_Error (RT_CUSTOMLIGHTS_PATH ": line must be < 256 characters");
+				}
+
+				curline[i] = (char)ch;
+				i++;
+			}
+
+			curline[i] = '\0';
+		}
+
+		if (curline[0] == '\0')
+		{
+			continue;
+		}
+
+		char      mapname[countof (rt_customlights_all[0].mapname)];
+		RgFloat3D position;
+		char      str_hexcolor[8];
+
+		int c = sscanf (curline, "%s %f %f %f %6s", mapname, &position.data[0], &position.data[1], &position.data[2], str_hexcolor);
+		if (c >= 5)
+		{
+			const RgFloat3D color01 = RT_HexStringToColor (str_hexcolor);
+
+			mapname[countof (mapname) - 1] = '\0';
+
+			rt_worldcustomlight_t *dst = &rt_customlights_all[rt_customlights_all_count++];
+			{
+				strncpy (dst->mapname, mapname, sizeof (dst->mapname));
+				dst->color01 = color01;
+				dst->position = position;
+				dst->deleted = false;
+			}
+		}
+	}
+
+	fclose (f);
+
+	// make list for current map
+	const char *cur_mapname = cl.worldmodel->name;
+
+	for (int i = 0; i < rt_customlights_all_count; i++)
+	{
+		const rt_worldcustomlight_t *src = &rt_customlights_all[i];
+
+		if (strncmp (src->mapname, cur_mapname, countof (src->mapname)) == 0)
+		{
+			rt_customlights_curr[rt_customlights_curr_count++] = i;
+		}
+	}
+}
+
+void RT_CustomLights_SaveCmd (void)
+{
+#ifdef _WIN32
+	// backup file
+	{
+		static int backupId = 0;
+		backupId = (backupId + 1) % 15;
+#define BACKUP_FOLDER RT_OVERRIDEN_FOLDER "backup"
+		char name[128];
+		sprintf (name, BACKUP_FOLDER "/world_custom_lights - %d.txt", backupId);
+		CreateDirectory (BACKUP_FOLDER, 0);
+		CopyFile (RT_CUSTOMLIGHTS_PATH, name, FALSE);
+	}
+#endif
+
+	FILE *f = fopen (RT_CUSTOMLIGHTS_PATH, "w+");
+	if (f == NULL)
+	{
+		Con_Printf ("Couldn't open %s\n", RT_CUSTOMLIGHTS_PATH);
+		return;
+	}
+
+	for (int i = 0; i < rt_customlights_all_count; i++)
+	{
+		const rt_worldcustomlight_t *lt = &rt_customlights_all[i];
+
+		if (lt->deleted)
+		{
+			continue;
+		}
+
+		const float *rawcolor = lt->color01.data;
+		const float *position = lt->position.data;
+
+		char hexstr[7];
+		assert (rawcolor[0] >= 0.0f && rawcolor[0] < 1.01f);
+		assert (rawcolor[1] >= 0.0f && rawcolor[1] < 1.01f);
+		assert (rawcolor[2] >= 0.0f && rawcolor[2] < 1.01f);
+		RT_ColorToHexString (rawcolor, hexstr);
+
+		fprintf (f, "%s %.2f %.2f %.2f %6s\n", lt->mapname, position[0], position[1], position[2], hexstr);
+	}
+
+	fclose (f);
+}
+
+void RT_CustomLights_AddCmd (void)
+{
+	if (Cmd_Argc () != 5)
+	{
+		Con_Printf ("adds a custom light at a given position (no persistence between saves)\n");
+		Con_Printf ("usage: <r> <g> <b> <intensity (0..1]>\n");
+		return;
+	}
+
+	RgFloat3D color01 = {
+		strtof (Cmd_Argv (1), NULL) / 255.0f,
+		strtof (Cmd_Argv (2), NULL) / 255.0f,
+		strtof (Cmd_Argv (3), NULL) / 255.0f,
+	};
+	float intensity = strtof (Cmd_Argv (4), NULL);
+	VectorScale (color01.data, intensity, color01.data);
+
+	RgFloat3D pos = RT_VEC3 (r_refdef.vieworg);
+
+	// slight offset so the light is not right at the camera position
+	vec3_t forward, right, up;
+	AngleVectors (r_refdef.viewangles, forward, right, up);
+	pos.data[0] += forward[0] * METRIC_TO_QUAKEUNIT (0.3f);
+	pos.data[1] += forward[1] * METRIC_TO_QUAKEUNIT (0.3f);
+	pos.data[2] += forward[2] * METRIC_TO_QUAKEUNIT (0.3f);
+
+	rt_customlights_all = Mem_Realloc (rt_customlights_all, sizeof (rt_customlights_all[0]) * (rt_customlights_all_count + 1));
+	rt_customlights_curr = Mem_Realloc (rt_customlights_curr, sizeof (rt_customlights_curr[0]) * (rt_customlights_all_count + 1));
+
+	rt_worldcustomlight_t *dst = &rt_customlights_all[rt_customlights_all_count];
+	{
+		const char *cur_mapname = cl.worldmodel->name;
+		strncpy (dst->mapname, cur_mapname, sizeof (dst->mapname));
+		dst->color01 = color01;
+		dst->position = pos;
+		dst->deleted = false;
+	}
+	rt_customlights_curr[rt_customlights_curr_count++] = rt_customlights_all_count;
+
+	rt_customlights_all_count++;
+
+	RT_CustomLights_SaveCmd ();
+}
+
+void RT_CustomLights_RemoveCmd (void)
+{
+	if (Cmd_Argc () != 2)
+	{
+		Con_Printf ("removes custom lights around the camera\n");
+		Con_Printf ("usage: <radius (meters)>\n");
+
+		return;
+	}
+
+	const vec3_t around = RT_VEC3 (r_refdef.vieworg);
+	float radius = strtof (Cmd_Argv (1), NULL);
+	radius = METRIC_TO_QUAKEUNIT (radius);
+
+	int count = 0;
+
+	// scan current world lights
+	for (int i = 0; i < rt_customlights_curr_count; i++)
+	{
+		rt_worldcustomlight_t *lt = &rt_customlights_all[rt_customlights_curr[i]];
+
+		if (lt->deleted)
+		{
+			continue;
+		}
+
+		if (VectorLengthSquared (lt->position.data, around) < radius * radius)
+		{
+			lt->deleted = true;
+			count++;
+		}
+	}
+
+	Con_Printf ("removed %d lights\n", count);
+
+	{
+		RT_CustomLights_SaveCmd ();
+	}
+}
+
+void RT_UploadAllWorldModelLights (void)
+{
+#if RT_USE_SPHERE_INSTEAD_OF_POLY
+	for (int i = 0; i < rt_wldlights_sph_count; i++)
+	{
+		RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &rt_wldlights_sph[i]);
+		RG_CHECK (r);
+
+		RT_ClusterLightAdd (rt_wldlights_sph[i].uniqueID, rt_wldlights_sph[i].position.data);
+	}
+#else
+	for (int i = 0; i < rt_wldlights_tri_count; i++)
+	{
+		RgResult r = rgUploadPolygonalLight (vulkan_globals_rt.instance, &rt_wldlights_tri[i]);
+		RG_CHECK (r);
+	}
+#endif
+
+	for (int i = 0; i < rt_customlights_curr_count; i++)
+	{
+		const rt_worldcustomlight_t *src = &rt_customlights_all[rt_customlights_curr[i]];
+
+		if (src->deleted)
+		{
+			continue;
+		}
+
+		RgFloat3D color = src->color01;
+		VectorScale (color.data, CVAR_TO_FLOAT (rt_wlight_intensity), color.data);
+		RT_FIXUP_LIGHT_INTENSITY (color.data, true);
+
+		RgSphericalLightUploadInfo lt = {
+			.uniqueID = RT_GetCustomObjectUniqueId (i),
+			.color = color,
+			.position = src->position,
+			.radius = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_wlight_radius)),
+		};
+
+		RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &lt);
+		RG_CHECK (r);
+
+		RT_ClusterLightAdd (lt.uniqueID, lt.position.data);
+	}
+}
+
+typedef struct rt_teleport_s
+{
+	vec3_t   a;
+	vec3_t   b;
+	float    b_angle;
+	qboolean potentially_mirror;
+} rt_teleport_t;
+
+rt_teleport_t *rt_teleports = NULL;
+int            rt_teleports_count = 0;
+
+struct rt_triggerteleport_t
+{
+	char target[128];
+	char model[128];
+};
+struct rt_infoteleportdestination_t
+{
+	char   targetname[128];
+	float  angle;
+	vec3_t origin;
+};
+struct rt_parsetriggers_result_t
+{
+	struct rt_triggerteleport_t         *trigs;
+	int                                  trigs_count;
+	struct rt_infoteleportdestination_t *dsts;
+	int                                  dsts_count;
+};
+
+static struct rt_parsetriggers_result_t ParseTeleportTriggers (void)
+{
+	struct rt_parsetriggers_result_t result = {0};
+
+	if (!cl.worldmodel)
+	{
+		return result;
+	}
+
+	const char *data = cl.worldmodel->entities;
+	if (!data)
+	{
+		return result;
+	}
+
+	char key[128], value[4096];
+
+#define STRUCT_STATE_STRUCT_STARTED	   1
+#define STRUCT_STATE_CLASSNAME_TRIGGER	   2
+#define STRUCT_STATE_CLASSNAME_DESTINATION 4
+#define STRUCT_STATE_TARGET		   8
+#define STRUCT_STATE_TARGETNAME		   16
+#define STRUCT_STATE_MODEL		   32
+#define STRUCT_STATE_ANGLE		   64
+#define STRUCT_STATE_ORIGIN		   128
+	int structstate = 0;
+
+	struct
+	{
+		struct rt_triggerteleport_t         tr;
+		struct rt_infoteleportdestination_t dst;
+	} structvalues = {0};
+
+	while (1)
+	{
+		data = COM_Parse (data);
+		if (!data)
+			return result; // error
+
+		if (com_token[0] == '{')
+		{
+			memset (&structvalues, 0, sizeof (structvalues));
+			structstate = STRUCT_STATE_STRUCT_STARTED;
+			continue;
+		}
+		else if (com_token[0] == '}')
+		{
+			if (structstate & STRUCT_STATE_STRUCT_STARTED)
+			{
+				if (structstate & STRUCT_STATE_CLASSNAME_TRIGGER)
+				{
+					result.trigs = Mem_Realloc (result.trigs, sizeof (*result.trigs) * (result.trigs_count + 1));
+					result.trigs[result.trigs_count] = structvalues.tr;
+					result.trigs_count++;
+				}
+				else if (structstate & STRUCT_STATE_CLASSNAME_DESTINATION)
+				{
+					result.dsts = Mem_Realloc (result.dsts, sizeof (*result.dsts) * (result.dsts_count + 1));
+					result.dsts[result.dsts_count] = structvalues.dst;
+					result.dsts_count++;
+				}
+			}
+
+			structstate = 0; // end of struct
+			continue;
+		}
+
+		if (com_token[0] == '_')
+			q_strlcpy (key, com_token + 1, sizeof (key));
+		else
+			q_strlcpy (key, com_token, sizeof (key));
+		while (key[0] && key[strlen (key) - 1] == ' ') // remove trailing spaces
+			key[strlen (key) - 1] = 0;
+		data = COM_Parse (data);
+		if (!data)
+			return result; // error
+		q_strlcpy (value, com_token, sizeof (value));
+
+		if (strcmp (key, "classname") == 0)
+		{
+			if (strcmp (value, "trigger_teleport") == 0)
+			{
+				structstate |= STRUCT_STATE_CLASSNAME_TRIGGER;
+			}
+			else if (strcmp (value, "info_teleport_destination") == 0)
+			{
+				structstate |= STRUCT_STATE_CLASSNAME_DESTINATION;
+			}
+		}
+		else if (strcmp (key, "origin") == 0)
+		{
+			vec3_t tmpvec;
+			int    components = sscanf (value, "%f %f %f", &tmpvec[0], &tmpvec[1], &tmpvec[2]);
+
+			if (components == 3)
+			{
+				structvalues.dst.origin[0] = tmpvec[0];
+				structvalues.dst.origin[1] = tmpvec[1];
+				structvalues.dst.origin[2] = tmpvec[2];
+				structstate |= STRUCT_STATE_ORIGIN;
+			}
+		}
+		else if (strcmp (key, "angle") == 0)
+		{
+			float tmp;
+			int   components = sscanf (value, "%f", &tmp);
+
+			if (components == 1)
+			{
+				structvalues.dst.angle = tmp;
+				structstate |= STRUCT_STATE_ANGLE;
+			}
+		}
+		else if (strcmp (key, "model") == 0)
+		{
+			q_strlcpy (structvalues.tr.model, value, sizeof (structvalues.tr.model));
+			structstate |= STRUCT_STATE_MODEL;
+		}
+		else if (strcmp (key, "target") == 0)
+		{
+			q_strlcpy (structvalues.tr.target, value, sizeof (structvalues.tr.target));
+			structstate |= STRUCT_STATE_TARGET;
+		}
+		else if (strcmp (key, "targetname") == 0)
+		{
+			q_strlcpy (structvalues.dst.targetname, value, sizeof (structvalues.dst.targetname));
+			structstate |= STRUCT_STATE_TARGETNAME;
+		}
+	}
+}
+
+static float DistanceSqr (const vec3_t a, const vec3_t b)
+{
+	vec3_t delta;
+	VectorSubtract (a, b, delta);
+
+	return DotProduct (delta, delta);
+}
+
+#define CUSTOM_PORTAL_DISTANCE_THRESHOLD (METRIC_TO_QUAKEUNIT (3.0f))
+static void LoadCustomTeleportInfoAndPatch (void)
+{
+	if (rt_teleports_count == 0)
+	{
+		return;
+	}
+
+	const char *cur_mapname = cl.worldmodel->name;
+	if (cur_mapname == NULL)
+	{
+		Con_Printf ("Null world\n");
+		return;
+	}
+
+	FILE *f = fopen (RT_CUSTOMPORTALS_PATH, "r");
+	if (!f)
+	{
+		return;
+	}
+
+	char line[1024] = "";
+
+	while (fgets (line, sizeof (line), f))
+	{
+		vec3_t entry_a = {0, 0, 0};
+		vec3_t custom_output = {0, 0, 0};
+		int    custom_ismirror = 0;
+
+		char mapname[128] = "";
+
+		int components = sscanf (
+			line,
+			"%s %f %f %f %f %f %f %d",
+			mapname,
+			&entry_a[0],
+			&entry_a[1],
+			&entry_a[2],
+			&custom_output[0],
+			&custom_output[1],
+			&custom_output[2],
+			&custom_ismirror);
+
+		if (components == 7)
+		{
+			custom_ismirror = false;
+			components = 8;
+		}
+
+		if (components == 8 && strncmp (mapname, cur_mapname, sizeof (mapname)) == 0)
+		{
+			for (int i = 0; i < rt_teleports_count; i++)
+			{
+				if (DistanceSqr (rt_teleports[i].a, entry_a) < CUSTOM_PORTAL_DISTANCE_THRESHOLD * CUSTOM_PORTAL_DISTANCE_THRESHOLD)
+				{
+					VectorCopy (custom_output, rt_teleports[i].b);
+					rt_teleports[i].potentially_mirror = !!custom_ismirror;
+				}
+			}
+		}
+	}
+
+	fclose (f);
+}
+
+#define RG_MAX_PORTALS 62
+
+void RT_ParseTeleports (void)
+{
+	rt_teleports_count = 0;
+
+	struct rt_parsetriggers_result_t r = ParseTeleportTriggers ();
+	if (r.trigs_count == 0 || r.dsts_count == 0)
+	{
+		return;
+	}
+
+	for (int i = 0; i < r.trigs_count; i++)
+	{
+		for (int o = 0; o < r.dsts_count; o++)
+		{
+			const struct rt_triggerteleport_t         *in = &r.trigs[i];
+			const struct rt_infoteleportdestination_t *out = &r.dsts[o];
+
+			// if found a match between trigger and destination
+			if (strncmp (in->target, out->targetname, sizeof (in->target)) == 0)
+			{
+				qmodel_t *mod = Mod_ForName (in->model, false);
+
+				if (mod)
+				{
+					rt_teleport_t *entry;
+					{
+						rt_teleports = Mem_Realloc (rt_teleports, sizeof (*rt_teleports) * (rt_teleports_count + 1));
+						entry = &rt_teleports[rt_teleports_count];
+						memset (entry, 0, sizeof (*entry));
+						rt_teleports_count++;
+					}
+
+					// trigger position
+					VectorAdd (mod->mins, mod->maxs, entry->a);
+					VectorScale (entry->a, 0.5f, entry->a);
+
+					// destination position
+					VectorCopy (out->origin, entry->b);
+					entry->b_angle = out->angle;
+
+					entry->potentially_mirror = false;
+				}
+
+				break;
+			}
+		}
+	}
+
+	// vkpt's portal limit
+	if (rt_teleports_count > RG_MAX_PORTALS)
+	{
+		rt_teleports_count = RG_MAX_PORTALS;
+		Con_Warning ("Too many teleports to render, limit is 62");
+	}
+
+	Mem_Free (r.trigs);
+	Mem_Free (r.dsts);
+
+	LoadCustomTeleportInfoAndPatch ();
+}
+
+static RgFloat3D ApplyTransform (const RgTransform *transform, const vec3_t v)
+{
+	RgFloat3D r = {0};
+	for (int i = 0; i < 3; i++)
+	{
+		r.data[i] =
+			transform->matrix[i][0] * v[0] +
+			transform->matrix[i][1] * v[1] +
+			transform->matrix[i][2] * v[2] +
+			transform->matrix[i][3];
+	}
+	return r;
+}
+
+static qboolean RT_FindNearestTeleport (const RgGeometryUploadInfo *info, uint8_t *result, qboolean *potentially_mirror)
+{
+	vec3_t emin = {FLT_MAX, FLT_MAX, FLT_MAX};
+	vec3_t emax = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+
+	for (uint32_t i = 0; i < info->vertexCount; i++)
+	{
+		RgFloat3D v = ApplyTransform (&info->transform, info->pVertices[i].position);
+
+		for (int k = 0; k < 3; k++)
+		{
+			emin[k] = q_min (v.data[k], emin[k]);
+			emax[k] = q_max (v.data[k], emax[k]);
+		}
+	}
+
+	vec3_t center;
+	VectorAdd (emin, emax, center);
+	VectorScale (center, 0.5f, center);
+
+	int   nearest = -1;
+	float nearest_dist = FLT_MAX;
+
+	for (int i = 0; i < rt_teleports_count; i++)
+	{
+		float d = DistanceSqr (rt_teleports[i].a, center);
+
+		if (d < nearest_dist)
+		{
+			nearest = i;
+			nearest_dist = d;
+		}
+	}
+
+	if (nearest < 0)
+	{
+		return false;
+	}
+
+	assert (nearest <= RG_MAX_PORTALS);
+
+	*result = (uint8_t)nearest;
+	*potentially_mirror = rt_teleports[nearest].potentially_mirror;
+	return true;
+}
+
+void RT_UploadAllTeleports (void)
+{
+	assert (rt_teleports_count >= 0 && rt_teleports_count <= RG_MAX_PORTALS);
+
+	const vec3_t outoffset = {0, 0, 64};
+
+	for (int i = 0; i < rt_teleports_count; i++)
+	{
+		const rt_teleport_t *tele = &rt_teleports[i];
+
+		vec3_t forward, right, up;
+		{
+			vec3_t out_angles = {0, tele->b_angle, 0};
+			AngleVectors (out_angles, forward, right, up);
+		}
+
+		RgPortalUploadInfo info =
+			{
+				.portalIndex = (uint8_t)i,
+				.inPosition = RT_VEC3 (tele->a),
+				.outPosition = RT_VEC3 (tele->b),
+				.outDirection = RT_VEC3 (forward),
+				.outUp = RT_VEC3 (up),
+			};
+
+		VectorAdd (info.outPosition.data, outoffset, info.outPosition.data);
+
+		RgResult r = rgUploadPortal (vulkan_globals_rt.instance, &info);
+		RG_CHECK (r);
+	}
+}
+
+void RT_PrintNearestPortal (void)
+{
+	assert (rt_teleports_count >= 0 && rt_teleports_count <= RG_MAX_PORTALS);
+
+	Con_Printf ("Camera: %.1f %.1f %.1f\n", r_refdef.vieworg[0], r_refdef.vieworg[1], r_refdef.vieworg[2]);
+
+	for (int i = 0; i < rt_teleports_count; i++)
+	{
+		qboolean isnear = DistanceSqr (rt_teleports[i].a, r_refdef.vieworg) < CUSTOM_PORTAL_DISTANCE_THRESHOLD * CUSTOM_PORTAL_DISTANCE_THRESHOLD;
+
+		if (isnear)
+		{
+			Con_Printf ("[Near] Portal %d: %.1f %.1f %.1f\n", i, rt_teleports[i].a[0], rt_teleports[i].a[1], rt_teleports[i].a[2]);
+		}
+		else
+		{
+			Con_Printf ("       Portal %d: %.1f %.1f %.1f\n", i, rt_teleports[i].a[0], rt_teleports[i].a[1], rt_teleports[i].a[2]);
+		}
+	}
+
+	int   nearest = -1;
+	float nearest_dist = FLT_MAX;
+
+	for (int i = 0; i < rt_teleports_count; i++)
+	{
+		float d = DistanceSqr (rt_teleports[i].a, r_refdef.vieworg);
+
+		if (d < nearest_dist)
+		{
+			nearest = i;
+			nearest_dist = d;
+		}
+	}
+
+	if (nearest >= 0)
+	{
+		Con_Printf ("Nearest portal: %d\n", nearest);
+	}
+}
+
 /*
 ================
 R_DrawTextureChains_ShowTris -- johnfitz

@@ -27,6 +27,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "gl_heap.h"
 #include <float.h>
 
+extern atomic_uint32_t rt_require_static_submit; // q2rtx: world static geometry resubmit flag
+
 cvar_t r_lodbias = {"r_lodbias", "1", CVAR_ARCHIVE};
 cvar_t gl_lodbias = {"gl_lodbias", "0", CVAR_ARCHIVE};
 
@@ -534,6 +536,52 @@ RgFloat3D RT_AnglesToDir (vec3_t angles)
 
 	RgFloat3D dir = RT_VEC3 (f);
 	return dir;
+}
+
+uint64_t RT_GetBrushSurfUniqueId (int entuniqueid, const qmodel_t *model, const msurface_t *surf, uint64_t triangle)
+{
+	assert (entuniqueid >= 0);
+
+	uint64_t surfindex = surf - model->surfaces;
+
+	// look gl_model.c Mod_LoadBrushModel
+	if (surfindex > 32767)
+	{
+		Con_DWarning ("%i faces exceeds standard limit of 32767.\n", surfindex);
+	}
+
+	return
+		1ull << 60 |		 // brush type
+		triangle << 48 |	 // triangle
+		surfindex << 32 |	 // surface
+		entuniqueid;		 // entity
+}
+
+uint64_t RT_GetAliasModelUniqueId (int entuniqueid)
+{
+	assert (entuniqueid >= 0);
+
+	return
+		2ull << 60 |		// model type
+		entuniqueid;		// entity
+}
+
+uint64_t RT_GetSpriteModelUniqueId (int entuniqueid)
+{
+	assert (entuniqueid >= 0);
+
+	return
+		3ull << 60 | // model type
+		entuniqueid; // entity
+}
+
+uint64_t RT_GetCustomObjectUniqueId (int index)
+{
+	assert (index >= 0);
+
+	return
+		4ull << 60 | // custom object type
+		index;		 // index
 }
 
 float RT_Luminance (const vec3_t color)
@@ -4680,11 +4728,20 @@ void R_NewMap (void)
 
 	GL_BuildLightmaps ();
 	GL_BuildBModelVertexBuffer ();
-	GL_BuildBModelAccelerationStructures ();
-	GL_PrepareSIMDAndParallelData ();
-	GL_SetupIndirectDraws ();
-	GL_SetupLightmapCompute ();
-	GL_UpdateLightmapDescriptorSets ();
+
+	if (!CVAR_TO_BOOL (rt_renderer))
+	{
+		GL_BuildBModelAccelerationStructures ();
+		GL_PrepareSIMDAndParallelData ();
+		GL_SetupIndirectDraws ();
+		GL_SetupLightmapCompute ();
+		GL_UpdateLightmapDescriptorSets ();
+	}
+	else
+	{
+		// q2rtx: submit world geometry once
+		Atomic_StoreUInt32 (&rt_require_static_submit, true);
+	}
 	// ericw -- no longer load alias models into a VBO here, it's done in Mod_LoadAliasModel
 
 	r_framecount = 0;	 // johnfitz -- paranoid?
@@ -4695,13 +4752,21 @@ void R_NewMap (void)
 	R_ParseWorldspawn ();	 // ericw -- wateralpha, lavaalpha, telealpha, slimealpha in worldspawn
 	R_ParseEntityDlights (); // 2021 rerelease shadow casting light entities
 
+	if (CVAR_TO_BOOL (rt_renderer))
+	{
+		// TODO(rt-port): RT_ParseElights() once the light system is ported
+		RT_ParseTeleports ();
+		RT_CustomLights_Parse ();
+	}
+
 	VEC_CLEAR (r_pointfile);
 
 	if (developer.value || map_checks.value)
 		if (!cl.worldmodel->visdata && COM_FileExists (va ("maps/%s.pts", cl.mapname), NULL))
 			Cbuf_AddText ("pointfile leak\n");
 
-	GL_UpdateDescriptorSets ();
+	if (!CVAR_TO_BOOL (rt_renderer))
+		GL_UpdateDescriptorSets ();
 }
 
 /*
