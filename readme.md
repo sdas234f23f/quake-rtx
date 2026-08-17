@@ -122,13 +122,13 @@ make -f Makefile.w64a
 
 If you are on Linux and want to cross-compile for Windows, see the `build_cross_win??.sh` scripts.
 
-#### Meson
+#### CMake
 
-With [Meson](https://mesonbuild.com/), [Ninja](https://ninja-build.org/) and a compiler installed (LLVM/Clang on PATH, or run `meson setup --vsenv build` for MSVC):
+With [CMake](https://cmake.org/) (3.20+) and [Ninja](https://ninja-build.org/) installed (on Windows run from a "Developer PowerShell for VS" / VS Build Tools environment):
 
 ~~~
 cd vkQuake
-meson setup build && ninja -C build
+cmake -B build && cmake --build build
 ~~~
 
 ### Linux
@@ -139,17 +139,17 @@ To compile vkQuake, first install the build dependencies:
 
 Ubuntu:
 ~~~
-apt-get install git meson gcc glslang-tools spirv-tools libsdl3-dev libvulkan-dev libvorbis-dev libmpg123-dev libx11-xcb-dev
+apt-get install git cmake ninja-build gcc glslang-tools spirv-tools libsdl3-dev libvulkan-dev libvorbis-dev libmpg123-dev libx11-xcb-dev
 ~~~
 
 Arch Linux:
 ~~~
-pacman -S git meson flac glibc libgl mpg123 libvorbis libx11 sdl3 vulkan-headers glslang spirv-tools
+pacman -S git cmake ninja flac glibc libgl mpg123 libvorbis libx11 sdl3 vulkan-headers glslang spirv-tools
 ~~~
 
 Fedora:
 ~~~
-dnf install git meson gcc glslang spirv-tools vulkan-loader-devel SDL3-devel mpg123-devel libvorbis-devel flac-devel opusfile-devel
+dnf install git cmake ninja-build gcc glslang spirv-tools vulkan-loader-devel SDL3-devel mpg123-devel libvorbis-devel flac-devel opusfile-devel
 ~~~
 
 On distributions that do not ship SDL3 yet, install the SDL2 development package instead (e.g. `libsdl2-dev`); the build falls back to SDL2 automatically.
@@ -164,18 +164,17 @@ Now go to the Quake directory and compile the executable:
 
 ~~~
 cd vkQuake
-meson build -Ddebug=true -Dstrip=false && ninja -C build
+cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo && cmake --build build
 ~~~
 
-Meson prefers SDL3 and falls back to SDL2 if it is not installed; add `-Duse_sdl3=disabled` to force SDL2 (or `enabled` to require SDL3).
+The CMake build requires SDL3.
 
 > **Note**\
-> The Meson version needs to be 1.3.0 or newer. For older distributions you can use make:
+> The CMake build needs CMake 3.20 or newer and Ninja. For older distributions you can use make:
 > ~~~
 > cd vkQuake/Quake
 > make -j
 > ~~~
-> Meson is the preferred way to build vkQuake because it automatically checks for out of date file depenencies, is faster and has better error reporting for missing dependencies.
 
 > **Note**\
 > vkQuake requires **SDL3** or, as a fallback for older distributions, at least **SDL2 2.0.6 with enabled Vulkan support**.
@@ -185,7 +184,7 @@ Meson prefers SDL3 and falls back to SDL2 if it is not installed; add `-Duse_sdl
 To compile vkQuake, first install the build dependencies with Homebrew:
 
 ~~~
-brew install molten-vk vulkan-headers glslang spirv-tools sdl3 libvorbis flac opus opusfile flac mpg123 meson pkgconfig
+brew install molten-vk vulkan-headers glslang spirv-tools sdl3 libvorbis flac opus opusfile flac mpg123 cmake ninja pkgconfig
 ~~~
 
 Then clone the vkQuake repo:
@@ -198,13 +197,13 @@ Now go to the Quake directory and compile the executable:
 
 ~~~
 cd vkQuake
-meson build -Ddebug=true -Dstrip=false && ninja -C build
+cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo && cmake --build build
 ~~~
 
-Meson prefers SDL3 and falls back to SDL2 if it is not installed; add `-Duse_sdl3=disabled` to force SDL2 (or `enabled` to require SDL3).
+The CMake build requires SDL3.
 
 > **Note**\
-> The Meson version needs to be 1.3.0 or newer.
+> The CMake build needs CMake 3.20 or newer and Ninja.
 
 ## Error reporting
 

@@ -4,14 +4,9 @@ set -euo pipefail
 cd /usr/src/vkQuake
 
 rm -rf build/appimage
-rm -rf build/sdl2
 
-python3 /opt/meson/meson.py setup build/appimage -Ddebug=true -Dstrip=false -Dmp3_lib=mad
-ninja -C build/appimage
-
-# Compile check the SDL2 backend (the AppImage ships SDL3)
-python3 /opt/meson/meson.py setup build/sdl2 -Ddebug=true -Dstrip=false -Dmp3_lib=mad -Duse_sdl3=disabled
-ninja -C build/sdl2
+cmake -B build/appimage -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build/appimage
 
 cd Packaging/AppImage
 rm -rf AppDir
