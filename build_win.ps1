@@ -77,27 +77,35 @@ if (-not (Test-Path (Join-Path $shaderOutDir "*.spv"))) {
     }
 }
 
-# Deploy shaders + textures + configs into the build's game dir.
-$ovrdOut = Join-Path $BuildDir "ovrd"
+# Deploy the RT renderer shaders into the build's game dir (id1/shaders); the
+# renderer loads them through the engine file system (pkz-aware).
+$gameDir = Join-Path $BuildDir "id1"
 if (Test-Path (Join-Path $shaderOutDir "*.spv")) {
-    if (-not (Test-Path (Join-Path $ovrdOut "shaders"))) {
-        New-Item -ItemType Directory -Path (Join-Path $ovrdOut "shaders") -Force | Out-Null
+    $shadersOut = Join-Path $gameDir "shaders"
+    if (-not (Test-Path $shadersOut)) {
+        New-Item -ItemType Directory -Path $shadersOut -Force | Out-Null
     }
-    Copy-Item (Join-Path $shaderOutDir "*.spv") (Join-Path $ovrdOut "shaders") -Force
-}
-$ovrdSrc = Join-Path $PSScriptRoot "ovrd"
-if (Test-Path $ovrdSrc) {
-    if (-not (Test-Path $ovrdOut)) { New-Item -ItemType Directory -Path $ovrdOut -Force | Out-Null }
-    Copy-Item (Join-Path $ovrdSrc "*") $ovrdOut -Force
+    Copy-Item (Join-Path $shaderOutDir "*.spv") $shadersOut -Force
 }
 
-# Override-material pack (id1/ovrd_mat.pkz, checked in): the game loads its
-# material overrides (emissive lava, normal maps, ...) from this .pkz.
-$pkzSrc  = Join-Path $PSScriptRoot "id1\ovrd_mat.pkz"
-$gameDir = Join-Path $BuildDir "id1"
-if (Test-Path $pkzSrc) {
+# Runtime configs/textures (checked in under ovrd/): texture_custom_info.txt,
+# world_custom_lights.txt, world_custom_portals.txt, WaterNormal_n.ktx2.
+$ovrdSrc = Join-Path $PSScriptRoot "ovrd"
+if (Test-Path $ovrdSrc) {
     if (-not (Test-Path $gameDir)) { New-Item -ItemType Directory -Path $gameDir -Force | Out-Null }
-    Copy-Item $pkzSrc (Join-Path $gameDir "ovrd_mat.pkz") -Force
+    Copy-Item (Join-Path $ovrdSrc "*") $gameDir -Force
+}
+
+# .pkz packs (checked in under id1/ or ovrd/): material overrides, blue noise,
+# Q2RTX shaders. The game loads them all through the engine file system.
+foreach ($pkzRoot in @((Join-Path $PSScriptRoot "id1"), (Join-Path $PSScriptRoot "ovrd"))) {
+    $pkzFiles = Get-ChildItem $pkzRoot -Filter "*.pkz" -ErrorAction SilentlyContinue
+    if ($pkzFiles) {
+        if (-not (Test-Path $gameDir)) { New-Item -ItemType Directory -Path $gameDir -Force | Out-Null }
+        foreach ($pkz in $pkzFiles) {
+            Copy-Item $pkz.FullName (Join-Path $gameDir $pkz.Name) -Force
+        }
+    }
 }
 
 exit 0

@@ -20,11 +20,11 @@
 
 #include "BlueNoise.h"
 
-
+#include <cstdio>
 #include <string>
 
 #include "Generated/ShaderCommonC.h"
-#include "ImageLoader.h"
+#include "Stb/stb_image.h"
 #include "Utils.h"
 #include "RgException.h"
 
@@ -47,36 +47,16 @@ BlueNoise::BlueNoise(
 {
     using namespace std::string_literals;
 
-    // no compression
-    const VkFormat imageFormat = VK_FORMAT_R8G8B8A8_UNORM;
-    const uint32_t bytesPerPixel = 4;
+    // Q2RTX-style blue noise: 16-bit RGBA PNGs loaded through the host file
+    // system (game dir or .pkz), each PNG contributing 4 R16 array layers
+    // (one per channel), exactly like Q2RTX textures.c load_blue_noise().
+    const VkFormat imageFormat = VK_FORMAT_R16_UNORM;
+    const uint32_t bytesPerPixel = 2;
+    const uint32_t channelCount = 4;
+    const uint32_t fileCount = BLUE_NOISE_TEXTURE_COUNT / channelCount;
 
     const VkDeviceSize oneLayerSize = bytesPerPixel * BLUE_NOISE_TEXTURE_SIZE * BLUE_NOISE_TEXTURE_SIZE;
     const VkDeviceSize dataSize = oneLayerSize * BLUE_NOISE_TEXTURE_COUNT;
-
-
-    ImageLoader imageLoader(std::move(_userFileLoad));
-    auto resultInfo = imageLoader.LoadLayered(_blueNoiseFilePath);
-
-    if (!resultInfo)
-    {
-        throw RgException(RG_ERROR_CANT_FIND_BLUE_NOISE, "Can't find blue noise file: "s + _blueNoiseFilePath);
-    }
-
-    if (resultInfo->baseSize.width != BLUE_NOISE_TEXTURE_SIZE || resultInfo->baseSize.height != BLUE_NOISE_TEXTURE_SIZE)
-    {
-        throw RgException(RG_ERROR_CANT_FIND_BLUE_NOISE, "Blue noise image size must be " + std::to_string(BLUE_NOISE_TEXTURE_SIZE));
-    }
-
-    if (resultInfo->layerData.size() != BLUE_NOISE_TEXTURE_COUNT)
-    {
-        throw RgException(RG_ERROR_CANT_FIND_BLUE_NOISE, "Blue noise image must have " + std::to_string(BLUE_NOISE_TEXTURE_COUNT) + " layers");
-    }
-
-    if (resultInfo->format != imageFormat)
-    {
-        throw RgException(RG_ERROR_CANT_FIND_BLUE_NOISE, "Blue noise image must have R8G8B8A8_UNORM format");
-    }
 
     // allocate buffer for all textures
     VkBufferCreateInfo stagingInfo = {};
@@ -84,21 +64,55 @@ BlueNoise::BlueNoise(
     stagingInfo.size = dataSize;
     stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 
-
     void *mappedData = nullptr;
     VkBuffer stagingBuffer = allocator->CreateStagingSrcTextureBuffer(&stagingInfo, "Blue noise image VMA staging alloc", &mappedData);
 
     assert(stagingBuffer != VK_NULL_HANDLE);
 
-    // load each texture and place it in staging buffer
-    for (uint32_t i = 0; i < BLUE_NOISE_TEXTURE_COUNT; i++)
-    {
-        void *dst = static_cast<uint8_t*>(mappedData) + oneLayerSize * i;
-        
-        memcpy(dst, resultInfo->layerData[i], oneLayerSize);
-    }
+    // load each texture and place it in the staging buffer
+    uint16_t *dst = static_cast<uint16_t *>(mappedData);
 
-    imageLoader.FreeLoaded();
+    for (uint32_t i = 0; i < fileCount; i++)
+    {
+        char path[256];
+        snprintf(path, sizeof path, "%sHDR_RGBA_%04u.png", _blueNoiseFilePath, i);
+
+        auto fileHandle = _userFileLoad->Open(path);
+        if (!fileHandle.Contains())
+        {
+            throw RgException(RG_ERROR_CANT_FIND_BLUE_NOISE, "Can't find blue noise file: "s + path);
+        }
+
+        int w = 0, h = 0, comps = 0;
+        uint16_t *data = stbi_load_16_from_memory(
+            static_cast<const stbi_uc *>(fileHandle.pData), (int)fileHandle.dataSize, &w, &h, &comps, 4);
+
+        if (!data)
+        {
+            throw RgException(RG_ERROR_CANT_FIND_BLUE_NOISE, "Failed to decode blue noise file: "s + path);
+        }
+
+        if (w != BLUE_NOISE_TEXTURE_SIZE || h != BLUE_NOISE_TEXTURE_SIZE)
+        {
+            stbi_image_free(data);
+            throw RgException(RG_ERROR_CANT_FIND_BLUE_NOISE,
+                "Blue noise image size must be "s + std::to_string(BLUE_NOISE_TEXTURE_SIZE) + ": " + path);
+        }
+
+        const uint32_t pixelCount = BLUE_NOISE_TEXTURE_SIZE * BLUE_NOISE_TEXTURE_SIZE;
+
+        // an RGBA PNG provides 4 R16 layers (R, G, B, A)
+        for (uint32_t k = 0; k < channelCount; k++)
+        {
+            uint16_t *layer = dst + (i * channelCount + k) * pixelCount;
+            for (uint32_t j = 0; j < pixelCount; j++)
+            {
+                layer[j] = data[j * channelCount + k];
+            }
+        }
+
+        stbi_image_free(data);
+    }
 
 
     // create image that contains all blue noise textures as layers

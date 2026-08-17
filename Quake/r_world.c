@@ -2006,44 +2006,41 @@ void RT_CustomLights_Parse (void)
 	rt_customlights_all_count = 0;
 	rt_customlights_curr_count = 0;
 
-	FILE *f = fopen (RT_CUSTOMLIGHTS_PATH, "r");
-	if (f == NULL)
+	unsigned int path_id;
+	byte *data = COM_LoadFile (RT_CUSTOMLIGHTS_PATH, &path_id);
+	if (data == NULL)
 	{
 		Con_Printf ("Couldn't open %s\n", RT_CUSTOMLIGHTS_PATH);
 		return;
 	}
 
 	int alloccount = 1;
+	for (qfileofs_t i = 0; i < com_filesize; i++)
 	{
-		int ch = 0;
-		do
+		if (data[i] == '\n')
 		{
-			ch = fgetc (f);
-			if (ch == '\n')
-			{
-				alloccount++;
-			}
-		} while (ch != EOF);
+			alloccount++;
+		}
 	}
 	rt_customlights_all = Mem_Realloc (rt_customlights_all, sizeof (rt_customlights_all[0]) * alloccount);
 	rt_customlights_curr = Mem_Realloc (rt_customlights_curr, sizeof (rt_customlights_curr[0]) * alloccount);
-	rewind (f);
 
+	const byte *p = data;
+	const byte *end = data + com_filesize;
 	qboolean foundend = false;
 	char     curline[256] = "";
 
-	while (!foundend)
+	while (!foundend && p < end)
 	{
 		{
 			int i = 0;
 
-			while (true)
+			while (p < end)
 			{
-				int ch = fgetc (f);
+				int ch = *p++;
 
-				if (ch == '\n' || ch == '\r' || ch == '\0' || ch == EOF)
+				if (ch == '\n' || ch == '\r' || ch == '\0')
 				{
-					foundend = (ch == '\0' || ch == EOF);
 					break;
 				}
 
@@ -2057,6 +2054,7 @@ void RT_CustomLights_Parse (void)
 			}
 
 			curline[i] = '\0';
+			foundend = (p >= end);
 		}
 
 		if (curline[0] == '\0')
@@ -2085,7 +2083,7 @@ void RT_CustomLights_Parse (void)
 		}
 	}
 
-	fclose (f);
+	Mem_Free (data);
 
 	// make list for current map
 	const char *cur_mapname = cl.worldmodel->name;
@@ -2103,23 +2101,24 @@ void RT_CustomLights_Parse (void)
 
 void RT_CustomLights_SaveCmd (void)
 {
+	const char *path = va ("%s/world_custom_lights.txt", com_gamedir);
+
 #ifdef _WIN32
 	// backup file
 	{
 		static int backupId = 0;
 		backupId = (backupId + 1) % 15;
-#define BACKUP_FOLDER RT_OVERRIDEN_FOLDER "backup"
 		char name[128];
-		sprintf (name, BACKUP_FOLDER "/world_custom_lights - %d.txt", backupId);
-		CreateDirectory (BACKUP_FOLDER, 0);
-		CopyFile (RT_CUSTOMLIGHTS_PATH, name, FALSE);
+		q_snprintf (name, sizeof (name), "%s/backup/world_custom_lights - %d.txt", com_gamedir, backupId);
+		CreateDirectory (va ("%s/backup", com_gamedir), 0);
+		CopyFile (path, name, FALSE);
 	}
 #endif
 
-	FILE *f = fopen (RT_CUSTOMLIGHTS_PATH, "w+");
+	FILE *f = fopen (path, "w+");
 	if (f == NULL)
 	{
-		Con_Printf ("Couldn't open %s\n", RT_CUSTOMLIGHTS_PATH);
+		Con_Printf ("Couldn't open %s\n", path);
 		return;
 	}
 
@@ -2460,16 +2459,38 @@ static void LoadCustomTeleportInfoAndPatch (void)
 		return;
 	}
 
-	FILE *f = fopen (RT_CUSTOMPORTALS_PATH, "r");
-	if (!f)
+	unsigned int path_id;
+	byte *data = COM_LoadFile (RT_CUSTOMPORTALS_PATH, &path_id);
+	if (!data)
 	{
 		return;
 	}
 
 	char line[1024] = "";
 
-	while (fgets (line, sizeof (line), f))
+	const byte *p = data;
+	const byte *end = data + com_filesize;
+	while (p < end)
 	{
+		{
+			int i = 0;
+			while (p < end)
+			{
+				int ch = *p++;
+				if (ch == '\n' || ch == '\r')
+				{
+					break;
+				}
+				if (i >= (int)sizeof (line) - 1)
+				{
+					break;
+				}
+				line[i] = (char)ch;
+				i++;
+			}
+			line[i] = '\0';
+		}
+
 		vec3_t entry_a = {0, 0, 0};
 		vec3_t custom_output = {0, 0, 0};
 		int    custom_ismirror = 0;
@@ -2507,7 +2528,7 @@ static void LoadCustomTeleportInfoAndPatch (void)
 		}
 	}
 
-	fclose (f);
+	Mem_Free (data);
 }
 
 #define RG_MAX_PORTALS 62

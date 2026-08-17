@@ -344,8 +344,8 @@ CONST = {
     "SKY_TYPE_RASTERIZED_GEOMETRY"          : 2,
     "SKY_TYPE_PROCEDURAL"                   : 3,
     
-    "BLUE_NOISE_TEXTURE_COUNT"              : 128,
-    "BLUE_NOISE_TEXTURE_SIZE"               : 128,
+    "BLUE_NOISE_TEXTURE_COUNT"              : 512,
+    "BLUE_NOISE_TEXTURE_SIZE"               : 256,
     "BLUE_NOISE_TEXTURE_SIZE_POW"           : CONST_TO_EVALUATE,
 
     "COMPUTE_COMPOSE_GROUP_SIZE_X"          : 16,

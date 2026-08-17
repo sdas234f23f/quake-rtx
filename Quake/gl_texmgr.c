@@ -380,46 +380,43 @@ static void RT_ParseTextureCustomInfos (void)
 
 	rt_texturecustominfos_count = 0;
 
-	FILE *f = fopen (RT_CUSTOMTEXTUREINFO_PATH, "r");
+	unsigned int path_id;
+	byte *data = COM_LoadFile (RT_CUSTOMTEXTUREINFO_PATH, &path_id);
 
-	if (f == NULL)
+	if (data == NULL)
 	{
 		Con_Printf ("Couldn't open %s\n", RT_CUSTOMTEXTUREINFO_PATH);
 		return;
 	}
 
 	int alloccount = 1;
+	for (qfileofs_t i = 0; i < com_filesize; i++)
 	{
-		int ch = 0;
-		do
+		if (data[i] == '\n')
 		{
-			ch = fgetc (f);
-			if (ch == '\n')
-			{
-				alloccount++;
-			}
-		} while (ch != EOF);
+			alloccount++;
+		}
 	}
 
 	rt_texturecustominfos = malloc (sizeof (struct rt_texturecustominfo_s) * alloccount);
-	rewind (f);
 
+	const byte *p = data;
+	const byte *end = data + com_filesize;
 	qboolean foundend = false;
 	char     curline[256];
 	int      curstate = RT_CUSTOMTEXTUREINFO_TYPE_NONE;
 
-	while (!foundend)
+	while (!foundend && p < end)
 	{
 		{
 			int i = 0;
 
-			while (true)
+			while (p < end)
 			{
-				int ch = fgetc (f);
+				int ch = *p++;
 
-				if (ch == '\n' || ch == '\r' || ch == '\0' || ch == EOF)
+				if (ch == '\n' || ch == '\r' || ch == '\0')
 				{
-					foundend = (ch == '\0' || ch == EOF);
 					break;
 				}
 
@@ -433,6 +430,7 @@ static void RT_ParseTextureCustomInfos (void)
 			}
 
 			curline[i] = '\0';
+			foundend = (p >= end);
 		}
 
 		if (curline[0] == '\0' || curline[0] == '#')
@@ -449,7 +447,7 @@ static void RT_ParseTextureCustomInfos (void)
 			{
 				Con_Printf (RT_CUSTOMTEXTUREINFO_PATH ": incompatible version");
 				rt_texturecustominfos_count = -1;
-				fclose (f);
+				Mem_Free (data);
 
 				return;
 			}
@@ -512,7 +510,7 @@ static void RT_ParseTextureCustomInfos (void)
 		rt_texturecustominfos_count = -1;
 	}
 
-	fclose (f);
+	Mem_Free (data);
 }
 
 static void RT_FillWithTextureCustomInfo (gltexture_t *dst)

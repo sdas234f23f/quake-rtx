@@ -63,8 +63,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define Q_UNUSED(x) (x = x) // for pesky compiler / lint warnings
 
-// q2rtx: RT renderer override folder (shaders, blue noise, material overrides)
-#define RT_OVERRIDEN_FOLDER "ovrd/"
+// q2rtx: RT renderer override assets (shaders, blue noise, material overrides).
+// All RT asset paths go through the engine file system (COM_FindFile), which
+// searches the game dir (id1) and every mounted .pkz archive, so the prefix is
+// empty (assets live in the game dir root / archive root).
+#define RT_OVERRIDEN_FOLDER ""
 
 #define MAX_NUM_ARGVS 50
 

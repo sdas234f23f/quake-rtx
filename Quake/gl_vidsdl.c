@@ -32,6 +32,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "menu.h"
 #include "steam.h"
 #include "rt_material.h"
+#include "rt_pkz.h"
 
 #ifdef USE_SDL3
 #include <SDL3/SDL_vulkan.h>
@@ -1175,6 +1176,46 @@ no_volume:
 
 /*
 ===============
+RT_FileOpenCallback / RT_FileCloseCallback
+
+vkpt file loading callbacks (RgInstanceCreateInfo::pfnOpenFile/pfnCloseFile).
+They route every renderer file read (shaders, blue noise, water normal,
+overriden textures) through the engine file system, so the files can live in
+the game dir or inside mounted .pkz archives.
+===============
+*/
+static void RT_FileOpenCallback (const char *pFilePath, void *pUserData, const void **ppOutData, uint32_t *pOutDataSize, void **ppOutFileUserHandle)
+{
+	(void)pUserData;
+
+	unsigned int path_id;
+	byte *data = COM_LoadFile (pFilePath, &path_id);
+
+	if (!data)
+	{
+		*ppOutData = NULL;
+		*pOutDataSize = 0;
+		*ppOutFileUserHandle = NULL;
+		return;
+	}
+
+	*ppOutData = data;
+	*pOutDataSize = (uint32_t)com_filesize;
+	*ppOutFileUserHandle = data;
+}
+
+static void RT_FileCloseCallback (void *pFileUserHandle, void *pUserData)
+{
+	(void)pUserData;
+
+	if (pFileUserHandle)
+	{
+		Mem_Free (pFileUserHandle);
+	}
+}
+
+/*
+===============
 RT_GL_InitInstance
 
 Creates the RT renderer instance (rgCreateInstance) instead of the native
@@ -1183,6 +1224,11 @@ Vulkan instance, and registers the RT console commands.
 */
 static void RT_GL_InitInstance (void)
 {
+	// mount .pkz archives BEFORE the renderer reads its files: vkpt loads
+	// shaders/blue noise/water normal through the engine file system
+	// (pfnOpenFile -> COM_FindFile), which searches the game dir + .pkz
+	RT_PKZ_Init ();
+
 #ifdef RG_USE_SURFACE_WIN32
 	// SDL3 exposes the native window handles via properties
 	RgWin32SurfaceCreateInfo win32Info = {
@@ -1192,7 +1238,9 @@ static void RT_GL_InitInstance (void)
 #endif
 
 	const char pShaderPath[] = RT_OVERRIDEN_FOLDER "shaders/";
-	const char pBlueNoisePath[] = RT_OVERRIDEN_FOLDER "BlueNoise_LDR_RGBA_128.ktx2";
+	// folder with the Q2RTX blue noise PNGs (16-bit RGBA, one PNG per 4 R16
+	// array layers), loaded through COM_FindFile (game dir or blue_noise.pkz)
+	const char pBlueNoisePath[] = RT_OVERRIDEN_FOLDER "blue_noise/256_256/";
 	const char pWaterTexturePath[] = RT_OVERRIDEN_FOLDER "WaterNormal_n.ktx2";
 
 	RgInstanceCreateInfo info = {
@@ -1204,6 +1252,10 @@ static void RT_GL_InitInstance (void)
 #endif
 
 		.pfnPrint = RT_PrintMessage,
+
+		// read all renderer files through the engine file system (pkz-aware)
+		.pfnOpenFile = RT_FileOpenCallback,
+		.pfnCloseFile = RT_FileCloseCallback,
 
 		.pShaderFolderPath = pShaderPath,
 		.pBlueNoiseFilePath = pBlueNoisePath,

@@ -225,7 +225,9 @@ layout(
     #error BLUE_NOISE_TEXTURE_SIZE_POW must be lower, around 6-8
 #endif
 
-// Blue noise random in [0..1] with 1/255 precision
+// Blue noise random in [0..1] with 1/65535 precision (R16 array layers).
+// Like Q2RTX, every source PNG's RGBA channels are stored as 4 consecutive
+// layers, so a vec4 of random values is gathered from 4 layers.
 vec4 rndBlueNoise8(uint seed, uint salt)
 {
     uint texIndex;
@@ -234,7 +236,13 @@ vec4 rndBlueNoise8(uint seed, uint salt)
 
     texIndex = (texIndex + salt) % BLUE_NOISE_TEXTURE_COUNT;
 
-    return texelFetch(blueNoiseTextures, ivec3(offset.x, offset.y, texIndex), 0);
+    const uint layerBase = (texIndex % (BLUE_NOISE_TEXTURE_COUNT / 4)) * 4;
+
+    return vec4(
+        texelFetch(blueNoiseTextures, ivec3(offset.x, offset.y, layerBase + 0), 0).r,
+        texelFetch(blueNoiseTextures, ivec3(offset.x, offset.y, layerBase + 1), 0).r,
+        texelFetch(blueNoiseTextures, ivec3(offset.x, offset.y, layerBase + 2), 0).r,
+        texelFetch(blueNoiseTextures, ivec3(offset.x, offset.y, layerBase + 3), 0).r);
 }
 #endif // DESC_SET_RANDOM
 
