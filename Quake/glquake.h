@@ -1148,4 +1148,6 @@ extern rt_vulkanglobals_t vulkan_globals_rt;
 
 extern qboolean request_shaders_reload;
 
+extern cvar_t rt_renderer;
+
 #endif /* GLQUAKE_H */

@@ -25,6 +25,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "gl_heap.h"
+#include "rt_material.h"
 
 #if defined(__GNUC__)
 #pragma GCC diagnostic push
@@ -51,6 +52,485 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 static cvar_t gl_max_size = {"gl_max_size", "0", CVAR_NONE};
 static cvar_t gl_picmip = {"gl_picmip", "0", CVAR_NONE};
+
+extern cvar_t vid_filter;
+extern cvar_t rt_emis_fullbright_dflt;
+
+// ============================================================================
+// q2rtx: RT renderer texture handling (ported from vkquake-rt)
+// ============================================================================
+
+#define RT_CUSTOMTEXTUREINFO_PATH RT_OVERRIDEN_FOLDER "texture_custom_info.txt"
+#define RT_CUSTOMTEXTUREINFO_VERSION 1
+struct rt_texturecustominfo_s
+{
+	char   rtname[64];
+	vec3_t color;
+	float  upoffset;
+	int    type;
+};
+static struct rt_texturecustominfo_s *rt_texturecustominfos = NULL;
+static int rt_texturecustominfos_count = 0; // -1: there are no infos, 0: uninitialized
+
+static void RT_FillWithTextureCustomInfo (gltexture_t *dst);
+static void RT_ParseTextureCustomInfos (void);
+
+static RgMaterialCreateFlags TexMgr_GetRtFlags (gltexture_t *glt)
+{
+	RgMaterialCreateFlags fs = 0;
+
+	if (glt->flags & TEXPREF_MIPMAP)
+	{
+		fs |= RG_MATERIAL_CREATE_DONT_GENERATE_MIPMAPS_BIT;
+	}
+
+	// if controlled by cvar
+	if (!(glt->flags & TEXPREF_NEAREST) && !(glt->flags & TEXPREF_LINEAR))
+	{
+		fs |= RG_MATERIAL_CREATE_DYNAMIC_SAMPLER_FILTER_BIT;
+	}
+
+	if (glt->source_format == SRC_LIGHTMAP)
+	{
+		fs |= RG_MATERIAL_CREATE_UPDATEABLE_BIT;
+	}
+
+	return fs;
+}
+
+static RgSamplerFilter TexMgr_GetFilterMode (gltexture_t *glt)
+{
+	if (glt->flags & TEXPREF_NEAREST)
+	{
+		return RG_SAMPLER_FILTER_NEAREST;
+	}
+
+	if (glt->flags & TEXPREF_LINEAR)
+	{
+		return RG_SAMPLER_FILTER_LINEAR;
+	}
+
+	return CVAR_TO_INT32 (vid_filter) == 1 ? RG_SAMPLER_FILTER_NEAREST : RG_SAMPLER_FILTER_LINEAR;
+}
+
+static SDL_Mutex *rtspecial_mutex;
+
+static THREAD_LOCAL qboolean     rtspecial_started;
+static THREAD_LOCAL qboolean     rtspecial_foundfullbright = false;
+static THREAD_LOCAL gltexture_t *rtspecial_target = NULL;
+static THREAD_LOCAL byte         rtspecial_default_rough;
+static THREAD_LOCAL byte         rtspecial_default_metallic;
+
+static THREAD_LOCAL RgMaterialCreateInfo rtspecial_info = {0};
+static THREAD_LOCAL void                *rtspecial_info_albedoAlpha = NULL; // to point to data from rtspecial_info
+static THREAD_LOCAL char                 rtspecial_info_pRelativePath[MAX_QPATH];
+
+static byte Luminance (byte r, byte g, byte b)
+{
+	float l = 0.2126f * (float)r / 255.0f + 0.7152f * (float)g / 255.0f + 0.0722f * (float)b / 255.0f;
+	int   i = (int)(l * 255);
+
+	return q_min (i, 255);
+}
+
+// https://gist.github.com/marukrap/7c361f2c367eaf40537a8715e3fd952a
+void RGBtoHSV (const vec3_t rgb, vec3_t out_hsv)
+{
+	float R = CLAMP (0.0f, rgb[0], 1.0f);
+	float G = CLAMP (0.0f, rgb[1], 1.0f);
+	float B = CLAMP (0.0f, rgb[2], 1.0f);
+
+	float M = fmaxf (R, fmaxf (G, B));
+	float m = fminf (R, fminf (G, B));
+	float C = M - m; // Chroma
+
+	float H = 0.f; // Hue
+	float S = 0.f; // Saturation
+	float V = 0.f; // Value
+
+	if (C != 0.f)
+	{
+		if (M == R)
+			H = fmodf (((G - B) / C), 6.f);
+		else if (M == G)
+			H = ((B - R) / C) + 2;
+		else if (M == B)
+			H = ((R - G) / C) + 4;
+
+		H *= 60;
+	}
+
+	if (H < 0.f)
+		H += 360;
+
+	V = M;
+
+	if (V != 0.f)
+		S = C / V;
+
+	out_hsv[0] = CLAMP (0.0f, H, 360.0f);
+	out_hsv[1] = CLAMP (0.0f, S, 1.0f);
+	out_hsv[2] = CLAMP (0.0f, V, 1.0f);
+}
+
+void HSVtoRGB (const vec3_t hsv, vec3_t out_rgb)
+{
+	float H = CLAMP (0.0f, hsv[0], 360.0f);
+	float S = CLAMP (0.0f, hsv[1], 1.0f);
+	// Note: don't clamp, as we modify it
+	float V = fmaxf (0.0f, hsv[2]);
+
+	float C = S * V;                        // Chroma
+	float HPrime = fmodf (H / 60, 6.f); // H'
+	float X = C * (1 - fabsf (fmodf (HPrime, 2.f) - 1));
+	float M = V - C;
+
+	float R = 0.f;
+	float G = 0.f;
+	float B = 0.f;
+
+	switch ((int)HPrime)
+	{
+	case 0:
+		R = C;
+		G = X;
+		break; // [0, 1)
+	case 1:
+		R = X;
+		G = C;
+		break; // [1, 2)
+	case 2:
+		G = C;
+		B = X;
+		break; // [2, 3)
+	case 3:
+		G = X;
+		B = C;
+		break; // [3, 4)
+	case 4:
+		R = X;
+		B = C;
+		break; // [4, 5)
+	case 5:
+		R = C;
+		B = X;
+		break; // [5, 6)
+	default:
+		break;
+	}
+
+	R += M;
+	G += M;
+	B += M;
+
+	// Note: don't clamp, as we modify luminance
+	out_rgb[0] = fmaxf (0.0f, R);
+	out_rgb[1] = fmaxf (0.0f, G);
+	out_rgb[2] = fmaxf (0.0f, B);
+}
+
+static void ModifyColorValue (vec3_t inout_color, float target_value)
+{
+	vec3_t hsv;
+	RGBtoHSV (inout_color, hsv);
+
+	hsv[2] *= target_value;
+
+	HSVtoRGB (hsv, inout_color);
+}
+
+static void FullbrightToRME (unsigned width, unsigned height, byte *fullbright)
+{
+	size_t pixels = (size_t)width * (size_t)height;
+
+	while (pixels-- > 0)
+	{
+		byte lum = Luminance (fullbright[0], fullbright[1], fullbright[2]);
+
+		if (lum > 0)
+		{
+			lum = CLAMP (0, CVAR_TO_UINT32 (rt_emis_fullbright_dflt), 255);
+		}
+		else
+		{
+			lum = 0;
+		}
+
+		// rough
+		fullbright[0] = rtspecial_default_rough;
+		// metallic
+		fullbright[1] = rtspecial_default_metallic;
+		// emissive
+		fullbright[2] = lum;
+
+		fullbright += 4;
+	}
+}
+
+void TexMgr_RT_SpecialStart (float default_rough, float default_metallic)
+{
+	assert (!rtspecial_started && !rtspecial_foundfullbright && rtspecial_target == NULL);
+	assert (rtspecial_info_albedoAlpha == NULL);
+
+	rtspecial_started = true;
+	rtspecial_default_rough = CLAMP (0, (int)(default_rough * 255), 255);
+	rtspecial_default_metallic = CLAMP (0, (int)(default_metallic * 255), 255);
+}
+
+static void TexMgr_RT_SpecialSave (gltexture_t *glt, const RgMaterialCreateInfo *info)
+{
+	assert (rtspecial_info_albedoAlpha == NULL);
+
+	rtspecial_target = glt;
+	rtspecial_info = *info;
+
+	{
+		size_t sz = sizeof (uint32_t) * glt->width * glt->height;
+
+		rtspecial_info_albedoAlpha = Mem_Alloc (sz);
+		memcpy (rtspecial_info_albedoAlpha, info->textures.pDataAlbedoAlpha, sz);
+	}
+
+	if (info->pRelativePath)
+	{
+		q_strlcpy (rtspecial_info_pRelativePath, info->pRelativePath, sizeof (rtspecial_info_pRelativePath));
+	}
+	else
+	{
+		rtspecial_info_pRelativePath[0] = '\0';
+	}
+}
+
+static void TexMgr_RT_SpecialFullbright (unsigned width, unsigned height, uint32_t *fullbright)
+{
+	assert (rtspecial_target != NULL && rtspecial_info_albedoAlpha != NULL);
+	assert (rtspecial_info.size.width > 0 && rtspecial_info.size.height > 0);
+
+	// strange vkpt limitation
+	if (rtspecial_info.size.width != width || rtspecial_info.size.height != height)
+	{
+		Con_DWarning ("Ignoring fullbright of \"%s\", as it has different size with albedo", rtspecial_info_pRelativePath);
+		assert (0);
+		return;
+	}
+
+	rtspecial_foundfullbright = true;
+
+	FullbrightToRME (width, height, (byte *)fullbright);
+
+	rtspecial_info.textures.pDataAlbedoAlpha = rtspecial_info_albedoAlpha;
+	rtspecial_info.pRelativePath = rtspecial_info_pRelativePath;
+
+	rtspecial_info.textures.pDataRoughnessMetallicEmission = fullbright;
+
+	SDL_LockMutex (rtspecial_mutex);
+	RgResult r = rgCreateMaterial (vulkan_globals_rt.instance, &rtspecial_info, &rtspecial_target->rtmaterial);
+	RG_CHECK (r);
+	SDL_UnlockMutex (rtspecial_mutex);
+}
+
+void TexMgr_RT_SpecialEnd ()
+{
+	assert (rtspecial_started);
+	assert (rtspecial_target != NULL && rtspecial_info_albedoAlpha != NULL);
+
+	if (!rtspecial_foundfullbright)
+	{
+		rtspecial_info.textures.pDataAlbedoAlpha = rtspecial_info_albedoAlpha;
+		rtspecial_info.pRelativePath = rtspecial_info_pRelativePath;
+
+		SDL_LockMutex (rtspecial_mutex);
+		RgResult r = rgCreateMaterial (vulkan_globals_rt.instance, &rtspecial_info, &rtspecial_target->rtmaterial);
+		RG_CHECK (r);
+		SDL_UnlockMutex (rtspecial_mutex);
+	}
+
+	Mem_Free (rtspecial_info_albedoAlpha);
+
+	rtspecial_started = false;
+	rtspecial_target = NULL;
+	rtspecial_foundfullbright = false;
+	memset (&rtspecial_info, 0, sizeof (rtspecial_info));
+	rtspecial_info_albedoAlpha = NULL;
+	rtspecial_info_pRelativePath[0] = '\0';
+}
+
+static struct rt_texturecustominfo_s *RT_PushTexCustom (const char *texname, int type)
+{
+	struct rt_texturecustominfo_s *dst = &rt_texturecustominfos[rt_texturecustominfos_count];
+	rt_texturecustominfos_count++;
+
+	memset (dst, 0, sizeof (*dst));
+	{
+		strncpy (dst->rtname, texname, sizeof (dst->rtname));
+		dst->rtname[sizeof (dst->rtname) - 1] = '\0';
+
+		dst->type = type;
+	}
+
+	return dst;
+}
+
+static void RT_ParseTextureCustomInfos (void)
+{
+	if (rt_texturecustominfos_count != 0)
+	{
+		return;
+	}
+
+	rt_texturecustominfos_count = 0;
+
+	FILE *f = fopen (RT_CUSTOMTEXTUREINFO_PATH, "r");
+
+	if (f == NULL)
+	{
+		Con_Printf ("Couldn't open %s\n", RT_CUSTOMTEXTUREINFO_PATH);
+		return;
+	}
+
+	int alloccount = 1;
+	{
+		int ch = 0;
+		do
+		{
+			ch = fgetc (f);
+			if (ch == '\n')
+			{
+				alloccount++;
+			}
+		} while (ch != EOF);
+	}
+
+	rt_texturecustominfos = malloc (sizeof (struct rt_texturecustominfo_s) * alloccount);
+	rewind (f);
+
+	qboolean foundend = false;
+	char     curline[256];
+	int      curstate = RT_CUSTOMTEXTUREINFO_TYPE_NONE;
+
+	while (!foundend)
+	{
+		{
+			int i = 0;
+
+			while (true)
+			{
+				int ch = fgetc (f);
+
+				if (ch == '\n' || ch == '\r' || ch == '\0' || ch == EOF)
+				{
+					foundend = (ch == '\0' || ch == EOF);
+					break;
+				}
+
+				if (i >= (int)sizeof (curline))
+				{
+					Sys_Error (RT_CUSTOMTEXTUREINFO_PATH ": line must be < 256 characters");
+				}
+
+				curline[i] = (char)ch;
+				i++;
+			}
+
+			curline[i] = '\0';
+		}
+
+		if (curline[0] == '\0' || curline[0] == '#')
+		{
+			continue;
+		}
+
+		if (strncmp (curline, "@VERSION", sizeof ("@VERSION") - 1) == 0)
+		{
+			int version;
+			int c = sscanf (curline + (sizeof ("@VERSION") - 1), "%d", &version);
+
+			if (c != 1 || version != RT_CUSTOMTEXTUREINFO_VERSION)
+			{
+				Con_Printf (RT_CUSTOMTEXTUREINFO_PATH ": incompatible version");
+				rt_texturecustominfos_count = -1;
+				fclose (f);
+
+				return;
+			}
+		}
+		else if (strcmp (curline, "@POLY_LIGHT") == 0)
+		{
+			curstate = RT_CUSTOMTEXTUREINFO_TYPE_POLY_LIGHT;
+		}
+		else if (strcmp (curline, "@RASTER_LIGHT") == 0)
+		{
+			curstate = RT_CUSTOMTEXTUREINFO_TYPE_RASTER_LIGHT;
+		}
+		else if (strcmp (curline, "@MIRROR") == 0)
+		{
+			curstate = RT_CUSTOMTEXTUREINFO_TYPE_MIRROR;
+		}
+		else if (strcmp (curline, "@EXACT_NORMALS") == 0)
+		{
+			curstate = RT_CUSTOMTEXTUREINFO_TYPE_EXACT_NORMALS;
+		}
+		else
+		{
+			char texname[64];
+			char str_hexcolor[8];
+			float mult;
+			float upoffset;
+
+			if (curstate == RT_CUSTOMTEXTUREINFO_TYPE_MIRROR || curstate == RT_CUSTOMTEXTUREINFO_TYPE_EXACT_NORMALS)
+			{
+				int c = sscanf (curline, "%s", texname);
+				if (c >= 1)
+				{
+					RT_PushTexCustom (texname, curstate);
+				}
+			}
+			else
+			{
+				int c = sscanf (curline, "%s %6s %f %f", texname, str_hexcolor, &mult, &upoffset);
+				if (c >= 2)
+				{
+					const RgFloat3D color = RT_HexStringToColor (str_hexcolor);
+					texname[sizeof texname - 1] = '\0';
+
+					struct rt_texturecustominfo_s *dst = RT_PushTexCustom (texname, curstate);
+					{
+						VectorCopy (color.data, dst->color);
+						if (c >= 3)
+						{
+							ModifyColorValue (dst->color, mult);
+						}
+						dst->upoffset = c >= 4 ? upoffset : 0.0f;
+					}
+				}
+			}
+		}
+	}
+
+	if (rt_texturecustominfos_count == 0)
+	{
+		rt_texturecustominfos_count = -1;
+	}
+
+	fclose (f);
+}
+
+static void RT_FillWithTextureCustomInfo (gltexture_t *dst)
+{
+	for (int i = 0; i < rt_texturecustominfos_count; i++)
+	{
+		if (strcmp (dst->rtname, rt_texturecustominfos[i].rtname) == 0)
+		{
+			memcpy (dst->rtlightcolor, rt_texturecustominfos[i].color, sizeof (vec3_t));
+			dst->rtcustomtextype = rt_texturecustominfos[i].type;
+			dst->rtupoffset = rt_texturecustominfos[i].upoffset;
+
+			return;
+		}
+	}
+
+	dst->rtcustomtextype = RT_CUSTOMTEXTUREINFO_TYPE_NONE;
+}
 
 extern cvar_t vid_filter;
 extern cvar_t vid_anisotropic;
@@ -430,6 +910,14 @@ gltexture_t *TexMgr_NewTexture (void)
 
 	numgltextures++;
 	SDL_UnlockMutex (texmgr_mutex);
+
+	// q2rtx: RT renderer fields
+	glt->rtname[0] = '\0';
+	glt->rtmaterial = RG_NO_MATERIAL;
+	glt->rtcustomtextype = RT_CUSTOMTEXTUREINFO_TYPE_NONE;
+	glt->rtupoffset = 0.0f;
+	memset (glt->rtlightcolor, 0, sizeof (glt->rtlightcolor));
+
 	return glt;
 }
 
@@ -772,6 +1260,7 @@ void TexMgr_Init (void)
 	cmd_function_t *cmd;
 
 	texmgr_mutex = SDL_CreateMutex ();
+	rtspecial_mutex = SDL_CreateMutex ();
 
 	// init texture list
 	free_gltextures = (gltexture_t *)Mem_Alloc (MAX_GLTEXTURES * sizeof (gltexture_t));
@@ -794,22 +1283,22 @@ void TexMgr_Init (void)
 
 	// load notexture images
 	notexture = TexMgr_LoadImage (
-		NULL, "notexture", 2, 2, SRC_RGBA, notexture_data, "", (src_offset_t)notexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
+		NULL, NULL, "notexture", 2, 2, SRC_RGBA, notexture_data, "", (src_offset_t)notexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
 	nulltexture = TexMgr_LoadImage (
-		NULL, "nulltexture", 2, 2, SRC_RGBA, nulltexture_data, "", (src_offset_t)nulltexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
+		NULL, NULL, "nulltexture", 2, 2, SRC_RGBA, nulltexture_data, "", (src_offset_t)nulltexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
 	whitetexture = TexMgr_LoadImage (
-		NULL, "whitetexture", 2, 2, SRC_RGBA, whitetexture_data, "", (src_offset_t)whitetexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
+		NULL, NULL, "whitetexture", 2, 2, SRC_RGBA, whitetexture_data, "", (src_offset_t)whitetexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
 	greytexture = TexMgr_LoadImage (
-		NULL, "greytexture", 2, 2, SRC_RGBA, greytexture_data, "", (src_offset_t)greytexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
+		NULL, NULL, "greytexture", 2, 2, SRC_RGBA, greytexture_data, "", (src_offset_t)greytexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
 	greylightmap = TexMgr_LoadImage (
-		NULL, "greytexture", 2, 2, SRC_LIGHTMAP, greytexture_data, "", (src_offset_t)greytexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
+		NULL, NULL, "greytexture", 2, 2, SRC_LIGHTMAP, greytexture_data, "", (src_offset_t)greytexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
 
 	TEMP_ALLOC (byte, bluenoise_rgba, sizeof (bluenoise_data) * 4);
 	for (i = 0; i < sizeof (bluenoise_data); ++i)
 		for (int j = 0; j < 3; ++j)
 			bluenoise_rgba[i * 4 + j] = bluenoise_data[i];
 	bluenoisetexture = TexMgr_LoadImage (
-		NULL, "bluenoise", 64, 64, SRC_RGBA, bluenoise_rgba, "", (src_offset_t)greytexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
+		NULL, NULL, "bluenoise", 64, 64, SRC_RGBA, bluenoise_rgba, "", (src_offset_t)greytexture_data, TEXPREF_NEAREST | TEXPREF_PERSIST | TEXPREF_NOPICMIP);
 	TEMP_FREE (bluenoise_rgba);
 
 	// have to assign these here becuase Mod_Init is called before TexMgr_Init
@@ -1014,6 +1503,223 @@ static void TexMgr_PreMultiply32 (byte *in, size_t width, size_t height)
 
 /*
 ================
+TexMgr_ApplyMaterialFromMat
+
+Builds the vkpt RGBA8 material textures from a Q2RTX-style .mat definition
+(phase 4.5) and replaces glt->rtmaterial with the result. Returns true if a
+material was applied.
+================
+*/
+static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoFallback)
+{
+	rt_material_t autoMat;
+	// The material key is the texture file path without extension, e.g.
+	// "textures/e1u1/foo" -- this matches the .mat entry names (Q2RTX
+	// convention) and the auto-detected suffix files (_norm/_gloss/_luma).
+	// Note: glt->rtname is the vkpt override path ("maps/...") and must NOT
+	// be used here.
+	rt_material_t *mat = RT_MAT_Find (glt->name);
+	if (!mat)
+	{
+		// no .mat definition: auto-detect the HD texture pack suffixes
+		// (<name>_norm, <name>_gloss, <name>_luma/_glow, <name>_bump)
+		if (!RT_MAT_AutoDetect (glt->name, &autoMat))
+			return false;
+		mat = &autoMat;
+	}
+
+	const int tw = glt->width;
+	const int th = glt->height;
+	const int npix = tw * th;
+
+	// load and resize the material textures to the final size
+	int bw = 0, bh = 0;
+	byte *baseTex = RT_MAT_LoadTexture (mat, RT_MAT_TEX_BASE, &bw, &bh);
+	int nw = 0, nh = 0;
+	byte *normTex = RT_MAT_LoadTexture (mat, RT_MAT_TEX_NORMALS, &nw, &nh);
+	int ew = 0, eh = 0;
+	byte *emisTex = RT_MAT_LoadTexture (mat, RT_MAT_TEX_EMISSIVE, &ew, &eh);
+	int gw = 0, gh = 0;
+	byte *glossTex = RT_MAT_LoadTexture (mat, RT_MAT_TEX_GLOSS, &gw, &gh);
+
+	byte *baseBuf = NULL, *normBuf = NULL, *emisBuf = NULL, *glossBuf = NULL;
+	if (baseTex) { baseBuf = (byte *)Mem_Alloc (npix * 4); stbir_resize_uint8 (baseTex, bw, bh, 0, baseBuf, tw, th, 0, 4); Mem_Free (baseTex); }
+	if (normTex) { normBuf = (byte *)Mem_Alloc (npix * 4); stbir_resize_uint8 (normTex, nw, nh, 0, normBuf, tw, th, 0, 4); Mem_Free (normTex); }
+	if (emisTex) { emisBuf = (byte *)Mem_Alloc (npix * 4); stbir_resize_uint8 (emisTex, ew, eh, 0, emisBuf, tw, th, 0, 4); Mem_Free (emisTex); }
+	if (glossTex) { glossBuf = (byte *)Mem_Alloc (npix * 4); stbir_resize_uint8 (glossTex, gw, gh, 0, glossBuf, tw, th, 0, 4); Mem_Free (glossTex); }
+
+	// if the material specifies no base texture, fall back to the original one
+	if (!baseBuf && !albedoFallback)
+	{
+		if (normBuf) Mem_Free (normBuf);
+		if (emisBuf) Mem_Free (emisBuf);
+		if (glossBuf) Mem_Free (glossBuf);
+		return false;
+	}
+
+	// does the base texture carry a real alpha channel (Q2RTX-style roughness
+	// packed in alpha)? JPGs have alpha = 255 everywhere, so they don't count.
+	qboolean baseHasAlpha = false;
+	if (baseBuf)
+	{
+		for (int i = 0; i < npix; i++)
+		{
+			if (baseBuf[i * 4 + 3] != 255)
+			{
+				baseHasAlpha = true;
+				break;
+			}
+		}
+	}
+
+	// same for the normal map: metalness is packed in its alpha (Q2RTX
+	// convention), but such PNGs have no alpha -> stay non-metallic.
+	qboolean normHasAlpha = false;
+	if (normBuf)
+	{
+		for (int i = 0; i < npix; i++)
+		{
+			if (normBuf[i * 4 + 3] != 255)
+			{
+				normHasAlpha = true;
+				break;
+			}
+		}
+	}
+
+	byte *albedo = (byte *)Mem_Alloc (npix * 4);
+	byte *rme    = (byte *)Mem_Alloc (npix * 4);
+	byte *normal = (byte *)Mem_Alloc (npix * 4);
+
+	const float baseFactor = (mat->base_factor > 0.0f) ? mat->base_factor : 1.0f;
+	const float roughOverride = mat->roughness_override; // 0 = use map-based roughness
+	const float defaultRough = rtspecial_default_rough / 255.0f;
+
+	for (int i = 0; i < npix; i++)
+	{
+		// albedo (sRGB), alpha = opaque (or mask later)
+		const byte *src = baseBuf ? baseBuf + i * 4 : (byte *)albedoFallback + i * 4;
+		int r = (int)(src[0] * baseFactor);
+		int g = (int)(src[1] * baseFactor);
+		int b = (int)(src[2] * baseFactor);
+		albedo[i * 4 + 0] = CLAMP (0, r, 255);
+		albedo[i * 4 + 1] = CLAMP (0, g, 255);
+		albedo[i * 4 + 2] = CLAMP (0, b, 255);
+		albedo[i * 4 + 3] = 255;
+
+		// roughness: roughness_override > gloss map (1 - gloss) > base alpha
+		// (Q2RTX packing) > default
+		float rough;
+		if (roughOverride > 0.0f)
+			rough = roughOverride;
+		else if (glossBuf)
+			rough = 1.0f - glossBuf[i * 4] / 255.0f;
+		else if (baseHasAlpha)
+			rough = baseBuf[i * 4 + 3] / 255.0f;
+		else
+			rough = defaultRough;
+
+		// metallic: from the normal map alpha (if it has one), or the
+		// metalness_factor from the .mat
+		float metal = mat->metalness_factor;
+		if (normBuf && normHasAlpha)
+			metal = (normBuf[i * 4 + 3] / 255.0f) * mat->metalness_factor;
+
+		// emissive: from the emissive texture, or synthesized from the base
+		float emiss = 0.0f;
+		if (emisBuf)
+		{
+			emiss = (0.2126f * emisBuf[i * 4 + 0] + 0.7152f * emisBuf[i * 4 + 1] + 0.0722f * emisBuf[i * 4 + 2]) / 255.0f;
+			emiss *= mat->emissive_factor;
+		}
+		else if (mat->synth_emissive || mat->is_light)
+		{
+			const float lum = (0.2126f * src[0] + 0.7152f * src[1] + 0.0722f * src[2]) / 255.0f;
+			if (mat->emissive_threshold <= 0 || lum > mat->emissive_threshold / 255.0f)
+				emiss = lum * mat->emissive_factor;
+		}
+
+		rme[i * 4 + 0] = CLAMP (0, (int)(rough * 255), 255);
+		rme[i * 4 + 1] = CLAMP (0, (int)(metal * 255), 255);
+		rme[i * 4 + 2] = CLAMP (0, (int)(emiss * 255), 255);
+		rme[i * 4 + 3] = 255;
+
+		// normal map (bump_scale applied around 128)
+		if (normBuf)
+		{
+			float nx = (normBuf[i * 4 + 0] - 128.0f) * mat->bump_scale + 128.0f;
+			float ny = (normBuf[i * 4 + 1] - 128.0f) * mat->bump_scale + 128.0f;
+			normal[i * 4 + 0] = CLAMP (0, (int)nx, 255);
+			normal[i * 4 + 1] = CLAMP (0, (int)ny, 255);
+			normal[i * 4 + 2] = normBuf[i * 4 + 2];
+		}
+		else
+		{
+			normal[i * 4 + 0] = 128;
+			normal[i * 4 + 1] = 128;
+			normal[i * 4 + 2] = 255;
+		}
+		normal[i * 4 + 3] = 255;
+	}
+
+	if (baseBuf) Mem_Free (baseBuf);
+	if (normBuf) Mem_Free (normBuf);
+	if (emisBuf) Mem_Free (emisBuf);
+	if (glossBuf) Mem_Free (glossBuf);
+
+	// debug: report which material was applied and the average emissive
+	extern cvar_t rt_mat_debug;
+	if (CVAR_TO_BOOL (rt_mat_debug))
+	{
+		double emSum = 0.0;
+		for (int i = 0; i < npix; i++)
+		{
+			emSum += rme[i * 4 + 2];
+		}
+		Con_Printf ("RT: applied material '%s' (glt='%s') base=%s norm=%s emis=%s gloss=%s avg_emis=%.1f/255\n",
+		            mat->name, glt->name,
+		            mat->filename_base[0] ? mat->filename_base : "-",
+		            mat->filename_normals[0] ? mat->filename_normals : "-",
+		            mat->filename_emissive[0] ? mat->filename_emissive : "-",
+		            mat->filename_gloss[0] ? mat->filename_gloss : "-",
+		            npix > 0 ? emSum / npix : 0.0);
+	}
+
+	RgMaterialCreateInfo info = {
+		.flags = TexMgr_GetRtFlags (glt),
+		.size = {tw, th},
+		.textures =
+			{
+				.pDataAlbedoAlpha = albedo,
+				.pDataRoughnessMetallicEmission = rme,
+				.pDataNormal = normal,
+			},
+		.pRelativePath = glt->rtname,
+		.filter = TexMgr_GetFilterMode (glt),
+		.addressModeU = RG_SAMPLER_ADDRESS_MODE_REPEAT,
+		.addressModeV = RG_SAMPLER_ADDRESS_MODE_REPEAT,
+	};
+
+	RgMaterial oldMaterial = glt->rtmaterial;
+	RgMaterial newMaterial = RG_NULL_HANDLE;
+	SDL_LockMutex (rtspecial_mutex);
+	RgResult r = rgCreateMaterial (vulkan_globals_rt.instance, &info, &newMaterial);
+	SDL_UnlockMutex (rtspecial_mutex);
+	RG_CHECK (r);
+
+	if (oldMaterial)
+		rgDestroyMaterial (vulkan_globals_rt.instance, oldMaterial);
+	glt->rtmaterial = newMaterial;
+
+	Mem_Free (albedo);
+	Mem_Free (rme);
+	Mem_Free (normal);
+
+	return true;
+}
+
+/*
+================
 TexMgr_LoadImage32 -- handles 32bit source data
 ================
 */
@@ -1031,7 +1737,10 @@ static void TexMgr_LoadImage32 (gltexture_t *glt, unsigned *data)
 	int mipheight = q_max (glt->height >> picmip, 1);
 
 	const qboolean is_cube = glt->source_format == SRC_RGBA_CUBEMAP;
-	int maxsize = (int)(is_cube ? vulkan_globals.device_properties.limits.maxImageDimensionCube : vulkan_globals.device_properties.limits.maxImageDimension2D);
+	// q2rtx: in RT mode there is no native device -- use vkpt's own limit
+	int maxsize = CVAR_TO_BOOL (rt_renderer)
+		? 4096
+		: (int)(is_cube ? vulkan_globals.device_properties.limits.maxImageDimensionCube : vulkan_globals.device_properties.limits.maxImageDimension2D);
 	if (!(glt->flags & TEXPREF_NOPICMIP) && gl_max_size.value)
 		maxsize = q_min (q_max ((int)gl_max_size.value, 1), maxsize);
 	if ((mipwidth > maxsize) || (mipheight > maxsize))
@@ -1087,6 +1796,55 @@ static void TexMgr_LoadImage32 (gltexture_t *glt, unsigned *data)
 	// Check for sanity. This should never be reached.
 	if (num_mips > MAX_MIPS)
 		Sys_Error ("Texture has over %d mips", MAX_MIPS);
+
+	// q2rtx: upload to the RT renderer instead of creating Vulkan images.
+	// Cubemaps and surface-index textures are native-only.
+	if (CVAR_TO_BOOL (rt_renderer))
+	{
+		if (!is_cube && glt->source_format != SRC_SURF_INDICES)
+		{
+			RgMaterialCreateInfo info = {
+				.flags = TexMgr_GetRtFlags (glt),
+				.size = {glt->width, glt->height},
+				.textures =
+					{
+						.pDataAlbedoAlpha = data,
+						.pDataRoughnessMetallicEmission = NULL,
+						.pDataNormal = NULL,
+					},
+				.pRelativePath = glt->rtname,
+				.filter = TexMgr_GetFilterMode (glt),
+				.addressModeU = RG_SAMPLER_ADDRESS_MODE_REPEAT,
+				.addressModeV = RG_SAMPLER_ADDRESS_MODE_REPEAT,
+			};
+
+			if (!rtspecial_started)
+			{
+				SDL_LockMutex (rtspecial_mutex);
+				RgResult r = rgCreateMaterial (vulkan_globals_rt.instance, &info, &glt->rtmaterial);
+				RG_CHECK (r);
+				SDL_UnlockMutex (rtspecial_mutex);
+			}
+			else
+			{
+				if (glt->flags & TEXPREF_RT_IS_EMISSIVE)
+				{
+					TexMgr_RT_SpecialFullbright (glt->width, glt->height, data);
+				}
+				else
+				{
+					TexMgr_RT_SpecialSave (glt, &info);
+				}
+			}
+
+			// Q2RTX-style .mat material: if this texture has a material
+			// definition, replace the RT material with the synthesized PBR one.
+			TexMgr_ApplyMaterialFromMat (glt, data);
+		}
+
+		SDL_UnlockMutex (texmgr_mutex);
+		return;
+	}
 
 	const qboolean lightmap = glt->source_format == SRC_LIGHTMAP;
 	const qboolean surface_indices = glt->source_format == SRC_SURF_INDICES;
@@ -1459,14 +2217,18 @@ TexMgr_LoadImage -- the one entry point for loading all textures
 ================
 */
 gltexture_t *TexMgr_LoadImage (
-	qmodel_t *owner, const char *name, int width, int height, enum srcformat format, byte *data, const char *source_file, src_offset_t source_offset,
-	unsigned flags)
+	const char *rtname, qmodel_t *owner, const char *name, int width, int height, enum srcformat format, byte *data, const char *source_file,
+	src_offset_t source_offset, unsigned flags)
 {
 	unsigned short crc = 0;
 	gltexture_t	  *glt;
 
 	if (isDedicated)
 		return NULL;
+
+	// q2rtx: RT texture custom info (emissive textures, mirrors, ...)
+	if (CVAR_TO_BOOL (rt_renderer))
+		RT_ParseTextureCustomInfos ();
 
 	// cache check
 	if (flags & TEXPREF_OVERWRITE)
@@ -1508,6 +2270,13 @@ gltexture_t *TexMgr_LoadImage (
 	glt->source_width = width;
 	glt->source_height = height;
 	glt->source_crc = crc;
+
+	// q2rtx: RT override path and custom texture info
+	glt->rtname[0] = '\0';
+	if (rtname)
+		q_strlcpy (glt->rtname, rtname, sizeof (glt->rtname));
+	if (CVAR_TO_BOOL (rt_renderer))
+		RT_FillWithTextureCustomInfo (glt);
 
 	// upload it
 	switch (glt->source_format)
@@ -1758,6 +2527,14 @@ GL_DeleteTexture
 static void GL_DeleteTexture (gltexture_t *texture)
 {
 	SDL_LockMutex (texmgr_mutex);
+
+	// q2rtx: release the RT renderer material (no-op in native mode)
+	if (texture->rtmaterial != RG_NO_MATERIAL)
+	{
+		RgResult r = rgDestroyMaterial (vulkan_globals_rt.instance, texture->rtmaterial);
+		RG_CHECK (r);
+		texture->rtmaterial = RG_NO_MATERIAL;
+	}
 
 	int				   garbage_index;
 	texture_garbage_t *garbage;

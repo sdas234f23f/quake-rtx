@@ -2293,7 +2293,7 @@ void GL_SetupLightmapCompute (void)
 		char name[32];
 		q_snprintf (name, sizeof (name), "lightmap_%07i", i);
 
-		lm->texture = TexMgr_LoadImage (
+		lm->texture = TexMgr_LoadImage (NULL, 
 			cl.worldmodel, name, LMBLOCK_WIDTH, LMBLOCK_HEIGHT, SRC_LIGHTMAP, lm->data, "", (src_offset_t)lm->data, TEXPREF_LINEAR | TEXPREF_NOPICMIP);
 		for (int j = 0; j < MAXLIGHTMAPS * 3 / 4; ++j)
 		{
@@ -2309,7 +2309,7 @@ void GL_SetupLightmapCompute (void)
 				if (size_w < LMBLOCK_WIDTH) // this is not common and is easier than handling variable strides in TexMgr_LoadImage
 					for (int row = 1; row < size_h; row++)
 						memmove (lm->lightstyle_data[j] + size_w * row * 4, lm->lightstyle_data[j] + LMBLOCK_WIDTH * row * 4, size_w * 4);
-				lm->lightstyle_textures[j] = TexMgr_LoadImage (
+				lm->lightstyle_textures[j] = TexMgr_LoadImage (NULL, 
 					cl.worldmodel, name, size_w, size_h, SRC_RGBA, lm->lightstyle_data[j], "", (src_offset_t)lm->data, TEXPREF_NEAREST | TEXPREF_NOPICMIP);
 			}
 			SAFE_FREE (lm->lightstyle_data[j]);
@@ -2323,7 +2323,7 @@ void GL_SetupLightmapCompute (void)
 			for (int row = 1; row < *size_h; row++)
 				memmove (lm->surface_indices + *size_w * row, lm->surface_indices + LMBLOCK_WIDTH * row, *size_w * 4);
 		q_snprintf (name, sizeof (name), "surfindices_%07i", i);
-		lm->surface_indices_texture = TexMgr_LoadImage (
+		lm->surface_indices_texture = TexMgr_LoadImage (NULL, 
 			cl.worldmodel, name, *size_w, *size_h, SRC_SURF_INDICES, (byte *)lm->surface_indices, "", (src_offset_t)lm->surface_indices,
 			TEXPREF_NEAREST | TEXPREF_NOPICMIP);
 		SAFE_FREE (lm->surface_indices);

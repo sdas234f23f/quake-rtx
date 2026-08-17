@@ -4577,7 +4577,7 @@ void R_TranslateNewPlayerSkin (int playernum)
 
 	// upload new image
 	q_snprintf (name, sizeof (name), "player_%i", playernum);
-	playertextures[playernum] = TexMgr_LoadImage (
+	playertextures[playernum] = TexMgr_LoadImage (NULL, 
 		currententity->model, name, paliashdr->skinwidth, paliashdr->skinheight, SRC_INDEXED, pixels, paliashdr->gltextures[skinnum][0]->source_file,
 		paliashdr->gltextures[skinnum][0]->source_offset, TEXPREF_PAD | TEXPREF_OVERWRITE);
 

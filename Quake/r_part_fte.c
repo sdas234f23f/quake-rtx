@@ -1169,7 +1169,7 @@ static void P_LoadTexture (part_type_t *ptype, qboolean warn)
 
 			if (data)
 			{
-				ptype->looks.texture = TexMgr_LoadImage (
+				ptype->looks.texture = TexMgr_LoadImage (NULL, 
 					NULL, texname, fwidth, fheight, fmt, data, filename, 0,
 					(ptype->looks.premul ? TEXPREF_PREMULTIPLY : 0) | (ptype->looks.nearest ? TEXPREF_NEAREST : 0) | TEXPREF_NOPICMIP | TEXPREF_ALPHA);
 			}
@@ -1195,7 +1195,7 @@ static void P_LoadTexture (part_type_t *ptype, qboolean warn)
 			{
 				static byte data[4 * 4 * 4];
 				memset (data, 0xff, sizeof (data));
-				thetex = TexMgr_LoadImage (
+				thetex = TexMgr_LoadImage (NULL, 
 					NULL, "particles/white", 4, 4, SRC_RGBA, data, "", (src_offset_t)data, TEXPREF_PERSIST | TEXPREF_NOPICMIP | TEXPREF_ALPHA);
 			}
 			ptype->looks.texture = thetex;
@@ -1220,7 +1220,7 @@ static void P_LoadTexture (part_type_t *ptype, qboolean warn)
 						data[(y * PARTICLETEXTURESIZE + x) * 4 + 3] = (byte)d;
 					}
 				}
-				thetex = TexMgr_LoadImage (
+				thetex = TexMgr_LoadImage (NULL, 
 					NULL, "particles/beamtexture", PARTICLETEXTURESIZE, PARTICLETEXTURESIZE, SRC_RGBA, data, "", (src_offset_t)data,
 					TEXPREF_PERSIST | TEXPREF_NOPICMIP | TEXPREF_ALPHA);
 			}
@@ -1249,7 +1249,7 @@ static void P_LoadTexture (part_type_t *ptype, qboolean warn)
 						data[(y * PARTICLETEXTURESIZE + x) * 4 + 3] = (byte)d / 2;
 					}
 				}
-				thetex = TexMgr_LoadImage (
+				thetex = TexMgr_LoadImage (NULL, 
 					NULL, "particles/ptritexture", PARTICLETEXTURESIZE, PARTICLETEXTURESIZE, SRC_RGBA, data, "", (src_offset_t)data,
 					TEXPREF_PERSIST | TEXPREF_NOPICMIP | TEXPREF_ALPHA);
 			}
@@ -1284,7 +1284,7 @@ static void P_LoadTexture (part_type_t *ptype, qboolean warn)
 						data[(y * PARTICLETEXTURESIZE + x) * 4 + 3] = (byte)d;
 					}
 				}
-				thetex = TexMgr_LoadImage (
+				thetex = TexMgr_LoadImage (NULL, 
 					NULL, "particles/balltexture", PARTICLETEXTURESIZE, PARTICLETEXTURESIZE, SRC_RGBA, data, "", (src_offset_t)data,
 					TEXPREF_PERSIST | TEXPREF_NOPICMIP | TEXPREF_ALPHA);
 			}
@@ -1317,7 +1317,7 @@ static void P_LoadTexture (part_type_t *ptype, qboolean warn)
 						data[(y * 16 + x) * 4 + 3] = exptexture[x][y] * 255 / 9.0;
 					}
 				}
-				thetex = TexMgr_LoadImage (
+				thetex = TexMgr_LoadImage (NULL, 
 					NULL, "particles/fuzzyparticle", 16, 16, SRC_RGBA, data, "", (src_offset_t)data, TEXPREF_PERSIST | TEXPREF_NOPICMIP | TEXPREF_ALPHA);
 			}
 			ptype->looks.texture = thetex;

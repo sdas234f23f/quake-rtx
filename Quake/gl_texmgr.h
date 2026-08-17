@@ -46,6 +46,7 @@ typedef enum
 	TEXPREF_WARPIMAGE       = 0x0800,   // resize this texture when warpimagesize changes
 	TEXPREF_PREMULTIPLY     = 0x1000,   // rgb = rgb*a; a=a;
 	TEXPREF_ALPHAPIXELS     = 0x2000,   // has demonstratable alpha pixels, mostly used for md3/md5
+	TEXPREF_RT_IS_EMISSIVE  = 0x4000,   // q2rtx: emissive counterpart of the texture (fullbright -> RME)
 } textureflags_t;
 // clang-format on
 
@@ -60,6 +61,15 @@ enum srcformat
 };
 
 typedef struct glheapallocation_s glheapallocation_t;
+
+enum
+{
+	RT_CUSTOMTEXTUREINFO_TYPE_NONE,
+	RT_CUSTOMTEXTUREINFO_TYPE_POLY_LIGHT,
+	RT_CUSTOMTEXTUREINFO_TYPE_RASTER_LIGHT,
+	RT_CUSTOMTEXTUREINFO_TYPE_MIRROR,
+	RT_CUSTOMTEXTUREINFO_TYPE_EXACT_NORMALS,
+};
 
 typedef struct gltexture_s
 {
@@ -89,6 +99,12 @@ typedef struct gltexture_s
 	VkDescriptorSet		descriptor_set;
 	VkFramebuffer		frame_buffer;
 	VkDescriptorSet		storage_descriptor_set;
+	// q2rtx: used by the RT renderer
+	char				rtname[64];
+	RgMaterial			rtmaterial;
+	vec3_t				rtlightcolor;
+	int					rtcustomtextype;			// RT_CUSTOMTEXTUREINFO_*
+	float				rtupoffset;
 } gltexture_t;
 
 extern gltexture_t *notexture;
@@ -119,12 +135,19 @@ void		 TexMgr_LoadPalette (void);
 
 // IMAGE LOADING
 gltexture_t *TexMgr_LoadImage (
-	qmodel_t *owner, const char *name, int width, int height, enum srcformat format, byte *data, const char *source_file, src_offset_t source_offset,
-	unsigned flags);
+	const char *rtname, qmodel_t *owner, const char *name, int width, int height, enum srcformat format, byte *data, const char *source_file,
+	src_offset_t source_offset, unsigned flags);
 void TexMgr_ReloadImage (gltexture_t *glt, int shirt, int pants);
 void TexMgr_ReloadNobrightImages (void);
 
 void TexMgr_UpdateTextureDescriptorSets (void);
+
+// q2rtx: kludge to load fullbright image as an emissive part of RgMaterial.
+// 1st call of TexMgr_LoadImage - prepare everything for 'rgCreateMaterial', but hold until:
+// - either 2nd call of TexMgr_LoadImage with TEXPREF_RT_IS_EMISSIVE - submit 'rgCreateMaterial' with data from 1st and 2nd call
+// - or call of TexMgr_RT_SpecialEnd - just submit 'rgCreateMaterial' with data from 1st call
+void TexMgr_RT_SpecialStart (float default_rough, float default_metallic);
+void TexMgr_RT_SpecialEnd (void);
 
 typedef struct glheapstats_s glheapstats_t;
 glheapstats_t				*TexMgr_GetHeapStats (void);
