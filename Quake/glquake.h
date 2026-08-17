@@ -1083,4 +1083,69 @@ RgFloat3D RT_HexStringToColor (const char hex[6]);
 void      RT_ColorToHexString (const vec3_t color, char out_hex[7]);
 float     VectorLengthSquared (const vec3_t a, const vec3_t b);
 
+// ---- RT renderer command-batch globals (rt_cb_context_t / rt_vulkanglobals_t) ----
+// Named rt_* to avoid clashing with the native cb_context_t / vulkanglobals_t
+// (hardwired to the native Vulkan renderer).
+
+typedef enum
+{
+	RT_CBX_UPDATE_LIGHTMAPS,
+	RT_CBX_WORLD_0,
+	RT_CBX_WORLD_1,
+	RT_CBX_WORLD_2,
+	RT_CBX_WORLD_3,
+	RT_CBX_WORLD_4,
+	RT_CBX_WORLD_5,
+	RT_CBX_ENTITIES_0,
+	RT_CBX_ENTITIES_1,
+	RT_CBX_ENTITIES_2,
+	RT_CBX_ENTITIES_3,
+	RT_CBX_ENTITIES_4,
+	RT_CBX_ENTITIES_5,
+	RT_CBX_SKY_AND_WATER,
+	RT_CBX_ALPHA_ENTITIES,
+	RT_CBX_PARTICLES,
+	RT_CBX_VIEW_MODEL,
+	RT_CBX_GUI,
+	RT_CBX_POST_PROCESS,
+	RT_CBX_NUM,
+} rt_secondary_cb_contexts_t;
+
+typedef struct rt_cb_context_s
+{
+	canvastype current_canvas;
+	float      cur_viewprojection[16];
+	RgViewport cur_viewport;
+
+	RgVertex *batch_verts;
+	uint32_t *batch_indices;
+	int       batch_verts_count;
+	int       batch_indices_count;
+} rt_cb_context_t;
+
+typedef struct
+{
+	// RT
+	RgInstance instance;
+
+	// Vulkan
+	qboolean       validation;
+	qboolean       debug_utils;
+	rt_cb_context_t primary_cb_context;
+	rt_cb_context_t secondary_cb_contexts[RT_CBX_NUM];
+	qboolean       supersampling;
+	qboolean       non_solid_fill;
+	qboolean       screen_effects_sops;
+
+	// Matrices
+	float projection_matrix[16];
+	float view_matrix[16];
+	float view_projection_matrix[16];
+
+} rt_vulkanglobals_t;
+
+extern rt_vulkanglobals_t vulkan_globals_rt;
+
+extern qboolean request_shaders_reload;
+
 #endif /* GLQUAKE_H */

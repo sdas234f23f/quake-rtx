@@ -120,6 +120,12 @@ cvar_t		  vid_fsaa = {"vid_fsaa", "0", CVAR_ARCHIVE};
 cvar_t		  vid_fsaamode = {"vid_fsaamode", "0", CVAR_ARCHIVE};
 cvar_t		  vid_gamma = {"gamma", "0.9", CVAR_ARCHIVE};		// johnfitz -- moved here from view.c
 cvar_t		  vid_contrast = {"contrast", "1.4", CVAR_ARCHIVE}; // QuakeSpasm, MarkV
+// q2rtx: renderer selection. 0 = native Vulkan renderer (default), 1 = RT renderer.
+cvar_t		  rt_renderer = {"rt_renderer", "0", CVAR_ARCHIVE};
+
+// q2rtx: RT renderer command-batch globals and shader-reload flag
+rt_vulkanglobals_t vulkan_globals_rt;
+qboolean           request_shaders_reload = false;
 cvar_t		  r_usesops = {"r_usesops", "1", CVAR_ARCHIVE};		// johnfitz
 #if defined(_DEBUG)
 static cvar_t r_raydebug = {"r_raydebug", "0", 0};
