@@ -396,6 +396,7 @@ typedef struct searchpath_s
 	char				 filename[MAX_OSPATH];
 	pack_t				*pack;			 // only one of filename / pack will be used
 	char				 dir[MAX_QPATH]; // directory name: "id1", "rogue", etc.
+	void				*rt_pkz;		 // rt_pkz_archive_t* (mounted .pkz, like a PAK)
 	struct searchpath_s *next;
 } searchpath_t;
 

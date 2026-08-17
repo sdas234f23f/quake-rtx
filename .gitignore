@@ -45,3 +45,5 @@ helgrind.log
 .cache/
 *.user
 *.user
+
+.idea/

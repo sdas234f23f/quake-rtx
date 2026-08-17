@@ -935,4 +935,152 @@ void R_AllocateLightmapComputeBuffers ();
 
 void GL_SetObjectName (uint64_t object, VkObjectType object_type, const char *name);
 
+// ============================================================================
+// Q2RTX-style ray-traced renderer (vendored vkpt) — infrastructure
+// The native renderer stays the default; the RT path is selected at startup
+// via the rt_renderer cvar and uses the RG_* API (vkpt.h).
+//
+// NOTE: the RT path has its own command-batch contexts (rt_cb_context_t /
+// rt_vulkanglobals_t) which intentionally do NOT reuse the native
+// cb_context_t / vulkanglobals_t — those are hardwired to the native Vulkan
+// renderer. The RT types will be added here when the RT frame path lands.
+// ============================================================================
+
+#define MAX_BATCH_INDICES 65536
+#define MAX_BATCH_VERTS   8196
+#define NUM_WORLD_CBX     6
+#define NUM_ENTITIES_CBX  6
+
+#define RG_CHECK(rgresult)                                                                      \
+	do                                                                                          \
+	{                                                                                           \
+		if ((rgresult) != RG_SUCCESS)                                                           \
+		{                                                                                       \
+			Sys_Error ("%s. Use -condebug to write logs", rgGetResultDescription ((rgresult))); \
+		}                                                                                       \
+	} while (0)
+
+// ---- Q2RTX light/cluster/material integration (ported from vkquake-rt) ----
+void RT_ParseElights (void);
+void RT_UploadAllElights (void);
+
+// Q2RTX per-BSP-cluster light lists (built from the PVS on the CPU).
+void RT_ClusterLightListsReset (void);
+void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin);
+void RT_ClusterLightListsUpload (void);
+
+void RT_CustomLights_Parse (void);
+void RT_CustomLights_SaveCmd (void);
+void RT_CustomLights_AddCmd (void);
+void RT_CustomLights_RemoveCmd (void);
+void RT_UploadAllWorldModelLights (void);
+
+void RT_ParseTeleports (void);
+void RT_UploadAllTeleports (void);
+void RT_PrintNearestPortal (void);
+
+// ---- color / transform helpers ----
+static inline uint32_t RT_PackColorToUint32(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{
+	return
+		((uint32_t)a << 24) |
+		((uint32_t)b << 16) |
+		((uint32_t)g << 8)  |
+		((uint32_t)r);
+}
+static inline uint32_t RT_PackColorToUint32_FromFloat01(float r, float g, float b, float a)
+{
+	return RT_PackColorToUint32 (
+	    (uint8_t)CLAMP(0, r * 255.0f, 255),
+	    (uint8_t)CLAMP(0, g * 255.0f, 255),
+	    (uint8_t)CLAMP(0, b * 255.0f, 255),
+	    (uint8_t)CLAMP(0, a * 255.0f, 255));
+}
+
+#define RT_TRANSFORM_IDENTITY { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 }
+#define RT_COLOR_WHITE { 1, 1, 1, 1 }
+#define RT_PACKED_COLOR_WHITE 0xFFFFFFFF
+
+#define RT_VEC3(x)         { (x)[0], (x)[1], (x)[2], }
+#define RT_VEC3_MULT(x, a) { (x)[0] * (a), (x)[1] * (a), (x)[2] * (a), }
+
+#define RT_VEC3_SET(dst, x, y, z) \
+	do                            \
+	{                             \
+		(dst)[0] = (x);           \
+		(dst)[1] = (y);           \
+		(dst)[2] = (z);           \
+	} while (0)
+
+#define QUAKEUNIT_IN_METERS    0.025f
+#define QUAKEUNIT_TO_METRIC(x) ((x)*QUAKEUNIT_IN_METERS)
+#define METRIC_TO_QUAKEUNIT(x) ((x) / QUAKEUNIT_IN_METERS)
+
+// because of units are not in meters
+#define RT_QUAKE_LIGHT_AREA_INTENSITY_FIX (1.0f / (QUAKEUNIT_IN_METERS * QUAKEUNIT_IN_METERS))
+#define RT_FIXUP_LIGHT_INTENSITY(color, witharea)                                   \
+	do                                                                              \
+	{                                                                               \
+		extern cvar_t rt_globallight_mult;                                          \
+		extern cvar_t rt_brightness;                                                \
+		extern cvar_t rt_light_color_r, rt_light_color_g, rt_light_color_b;         \
+		float         area = (witharea) ? RT_QUAKE_LIGHT_AREA_INTENSITY_FIX : 1.0f; \
+		float         base = CVAR_TO_FLOAT (rt_globallight_mult) * area * CVAR_TO_FLOAT (rt_brightness); \
+		(color)[0] *= base * (CLAMP (0, CVAR_TO_INT32 (rt_light_color_r), 255) / 255.0f); \
+		(color)[1] *= base * (CLAMP (0, CVAR_TO_INT32 (rt_light_color_g), 255) / 255.0f); \
+		(color)[2] *= base * (CLAMP (0, CVAR_TO_INT32 (rt_light_color_b), 255) / 255.0f); \
+	} while (0)
+// RGB tint applied to every light source (sun, dynamic, world, ambient).
+// rt_brightness is handled separately where scalar scaling is enough.
+#define RT_APPLY_LIGHT_TINT(color)                                              \
+	do                                                                          \
+	{                                                                           \
+		extern cvar_t rt_light_color_r, rt_light_color_g, rt_light_color_b;     \
+		(color)[0] *= CLAMP (0, CVAR_TO_INT32 (rt_light_color_r), 255) / 255.0f; \
+		(color)[1] *= CLAMP (0, CVAR_TO_INT32 (rt_light_color_g), 255) / 255.0f; \
+		(color)[2] *= CLAMP (0, CVAR_TO_INT32 (rt_light_color_b), 255) / 255.0f; \
+	} while (0)
+// RGB tint applied to the sky display color (independent from the sun light).
+#define RT_APPLY_SKY_COLOR(color)                                              \
+	do                                                                         \
+	{                                                                          \
+		extern cvar_t rt_sky_color_r, rt_sky_color_g, rt_sky_color_b;          \
+		(color)[0] *= CLAMP (0, CVAR_TO_INT32 (rt_sky_color_r), 255) / 255.0f; \
+		(color)[1] *= CLAMP (0, CVAR_TO_INT32 (rt_sky_color_g), 255) / 255.0f; \
+		(color)[2] *= CLAMP (0, CVAR_TO_INT32 (rt_sky_color_b), 255) / 255.0f; \
+	} while (0)
+#define RT_INIT_DEFAULT_LIGHT_COLOR(color)                                      \
+	do                                                                          \
+	{                                                                           \
+		extern cvar_t rt_globallight_r, rt_globallight_g, rt_globallight_b;     \
+		(color)[0] = CLAMP (0, CVAR_TO_INT32 (rt_globallight_r), 255) / 255.0f; \
+		(color)[1] = CLAMP (0, CVAR_TO_INT32 (rt_globallight_g), 255) / 255.0f; \
+		(color)[2] = CLAMP (0, CVAR_TO_INT32 (rt_globallight_b), 255) / 255.0f; \
+	} while (0)
+#define RT_INIT_SKY_LIGHT_COLOR(color)                                      \
+	do                                                                      \
+	{                                                                       \
+		extern cvar_t rt_sky_light_r, rt_sky_light_g, rt_sky_light_b;       \
+		(color)[0] = CLAMP (0, CVAR_TO_INT32 (rt_sky_light_r), 255) / 255.0f; \
+		(color)[1] = CLAMP (0, CVAR_TO_INT32 (rt_sky_light_g), 255) / 255.0f; \
+		(color)[2] = CLAMP (0, CVAR_TO_INT32 (rt_sky_light_b), 255) / 255.0f; \
+	} while (0)
+
+#define ENT_UNIQUEID_WORLD     (UINT16_MAX)
+#define ENT_UNIQUEID_VIEWMODEL (UINT16_MAX + 32)
+#define RT_UNIQUEID_DONTCARE   (UINT64_MAX)
+uint64_t RT_GetBrushSurfUniqueId (int entuniqueid, const qmodel_t *model, const msurface_t *surf, uint64_t triangle);
+uint64_t RT_GetAliasModelUniqueId (int entuniqueid);
+uint64_t RT_GetSpriteModelUniqueId (int entuniqueid);
+uint64_t RT_GetCustomObjectUniqueId (int index);
+
+RgTransform RT_GetModelTransform (const float model_matrix[16]);
+RgTransform RT_GetBrushModelMatrix (entity_t *e);
+
+RgFloat3D RT_AnglesToDir (/* const */ vec3_t angles);
+float     RT_Luminance (const vec3_t color);
+RgFloat3D RT_HexStringToColor (const char hex[6]);
+void      RT_ColorToHexString (const vec3_t color, char out_hex[7]);
+float     VectorLengthSquared (const vec3_t a, const vec3_t b);
+
 #endif /* GLQUAKE_H */

@@ -376,6 +376,9 @@ static inline int FindLastBitNonZero64 (const uint64_t mask)
 #error Vulkan SDK too old
 #endif
 
+// Q2RTX-style ray-traced renderer (vendored vkpt, built as a static lib)
+#include <vkpt/vkpt.h>
+
 #include "console.h"
 #include "wad.h"
 #include "vid.h"
@@ -398,6 +401,12 @@ static inline int FindLastBitNonZero64 (const uint64_t mask)
 #include "cdaudio.h"
 #include "glquake.h"
 #include "../Shaders/shaders.h"
+
+// q2rtx: cvar access helpers
+#define CVAR_TO_BOOL(x)   (((x).value > 0.5f) ? true : false)
+#define CVAR_TO_FLOAT(x)  ((x).value)
+#define CVAR_TO_UINT32(x) (((x).value > 0.5f) ? ((uint32_t)(x).value) : 0u)
+#define CVAR_TO_INT32(x)  ((int)(x).value)
 
 #include "tasks.h"
 #include "atomics.h"
