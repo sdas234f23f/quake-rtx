@@ -6,6 +6,11 @@ project(
 
 cc = meson.get_compiler('c')
 
+# The vendored vkpt renderer is C++20; it is built as a CMake subproject
+# (subprojects/vkpt/CMakeLists.txt) and linked into vkquake as a static library.
+add_languages('cpp', required : true)
+cpp = meson.get_compiler('cpp')
+
 # Always build keeping frame pointers to get better backtraces
 add_project_arguments(cc.get_supported_arguments('-fno-omit-frame-pointer', '/Oy-'), language: 'c')
 
@@ -334,7 +339,9 @@ if build_machine.system() == 'darwin'
     endif
     deps += cc.find_library('MoltenVK', required : true, dirs : molten_dirs)
 else
-    deps += dependency('vulkan', version: '>=1.4.341')
+    # NOTE(rt-renderer): relaxed locally from >=1.4.341 (only 1.4.321.1 SDK
+    # is installed). Upstream requires 1.4.341; re-tighten after upgrading.
+    deps += dependency('vulkan', version: '>=1.4.321')
 endif
 
 if get_option('use_codec_wave').enabled()
@@ -435,6 +442,25 @@ endif
 
 if get_option('do_userdirs').enabled()
     cflags += '-DDO_USERDIRS=1'
+endif
+
+# ---- vendored vkpt renderer (Q2RTX-style ray tracing, built via CMake) ----
+cmake = import('cmake')
+vkpt_sp = cmake.subproject('vkpt')
+vkpt_dep = vkpt_sp.dependency('vkpt')
+deps += vkpt_dep
+
+if host_machine.system() == 'windows'
+    # prebuilt AMD-signed FidelityFX API DLL, used by vkpt's FSR 2/3.1.
+    # fs.copyfile is sandboxed out of nested subprojects, so use a
+    # custom_target running python instead.
+    ffx_dll = custom_target('amd_fidelityfx_vk',
+        output : 'amd_fidelityfx_vk.dll',
+        command : [find_program('python'), '-c',
+            'import shutil,sys; shutil.copyfile(sys.argv[1], sys.argv[2])',
+            meson.project_source_root() / 'subprojects/vkpt/Source/FidelityFX_SDK_1.1.4/src/PrebuiltSignedDLL/amd_fidelityfx_vk.dll',
+            '@OUTPUT@'],
+        build_by_default : true)
 endif
 
 incdirs = [

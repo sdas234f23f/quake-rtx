@@ -1,5 +1,8 @@
 *.suo
 vkquake.VC*
+vkpt/Build/
+build*/
+build-*/
 Quake/*.dll
 Quake/*.o
 Quake/*.d

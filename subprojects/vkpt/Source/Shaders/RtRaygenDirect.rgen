@@ -1,0 +1,158 @@
+// Copyright (c) 2021 Sultim Tsyrendashiev
+// 
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+// 
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+// 
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+#version 460
+
+// don't need albedo for direct illumination
+#define MATERIAL_MAX_ALBEDO_LAYERS 0
+
+#define DESC_SET_TLAS 0
+#define DESC_SET_FRAMEBUFFERS 1
+#define DESC_SET_GLOBAL_UNIFORM 2
+#define DESC_SET_VERTEX_DATA 3
+#define DESC_SET_TEXTURES 4
+#define DESC_SET_RANDOM 5
+#define DESC_SET_LIGHT_SOURCES 6
+#define LIGHT_SAMPLE_METHOD (LIGHT_SAMPLE_METHOD_DIRECT)
+#include "RaygenCommon.h"
+#include "Q2Asvgf.h"
+#include "Q2LightLists.h"
+
+// RNG salts for the Q2RTX-style NEE direct pass. The non-sun lights are
+// sampled twice per pixel (2x rays), each sample gets its own salt range.
+#define Q2_RNG_CELL_SELECT 200   // per sample: 200+4*s .. 200+4*s+2
+#define Q2_RNG_LIGHT_POINT 208   // per sample: 208+2*s, 208+2*s+1
+#define Q2_RNG_SUN_DISK 212      // the sun keeps a single ray
+
+// Q2RTX caps the solid angle of sphere lights to kill fireflies from small
+// lights near surfaces. Without it, the light-textured surfaces (signs, torch
+// flames) that are converted to tiny spheres sit IN their own surface, get a
+// solid angle of ~2*pi and overexpose into a flat white square (which makes
+// the scene look untextured). Only surfaces within a few units of the light
+// are affected; distant lighting is unchanged.
+#define Q2_DIRECT_MAX_SPHERE_SOLID_ANGLE 0.02
+
+void main()
+{
+    const ivec2 pix = ivec2(gl_LaunchIDEXT.xy);
+
+    // Gradient sample pixels carry the previous frame's RNG seed (patched by
+    // the Q2RTX-style gradient reproject) so this pass re-traces them with the
+    // same random numbers as the previous frame.
+    const uint seed = texelFetch(framebufQ2RngSeed_Sampler, pix, 0).r;
+
+    const Surface surf = fetchGbufferSurface(pix);
+
+    if (surf.isSky)
+    {
+        imageStore(framebufUnfilteredDirect, pix, uvec4(0));
+        imageStore(framebufUnfilteredSpecular, pix, uvec4(0));
+        return;
+    }
+
+    const bool isGradient = q2GetIsGradient(pix);
+    // BSP cluster of the primary hit (written by the primary pass from
+    // triangle.cluster, Q2RTX IMG_PT_CLUSTER_A). Sky = ~0u (empty list).
+    const uint cluster = texelFetch(framebufQ2Cluster_Sampler, pix, 0).r;
+
+    // Phong params for the CDF mass (Q2RTX get_direct_illumination)
+    const float alpha = square(surf.roughness);
+    const float phongExp = q2RoughnessSquareToSpecPower(alpha);
+    const float phongScale = min(100.0, 1.0 / (M_PI * max(alpha * alpha, 1e-4)));
+    const float phongWeight = clamp(
+        getLuminance(surf.specularColor) / (getLuminance(surf.specularColor) + getLuminance(surf.albedo)),
+        0.0, 0.9);
+
+    vec3 directDiffuse = vec3(0.0);
+    vec3 directSpecular = vec3(0.0);
+
+    // 1) NEE from the per-cluster light list (Q2RTX light-selection CDF).
+    //    2 independent light samples per pixel (2x non-sun rays): each sample
+    //    is a complete unbiased NEE estimate, so the two are averaged -> half
+    //    the variance of a single light ray.
+    const int Q2_NEE_LIGHT_SAMPLES = 2;
+
+    for (int s = 0; s < Q2_NEE_LIGHT_SAMPLES; s++)
+    {
+        const uint saltBase = uint(Q2_RNG_CELL_SELECT) + uint(s) * 4u;
+        const vec3 rng = vec3(
+            rnd16(seed, saltBase),
+            rnd16(seed, saltBase + 1u),
+            rnd16(seed, saltBase + 2u));
+
+        uint lightIndex = LIGHT_INDEX_NONE;
+        uint lightSlot = 0u;
+        float lightPdf = 0.0;
+        q2SampleClusterLights(cluster, surf.position, surf.normal, surf.toViewerDir,
+                              phongExp, phongScale, phongWeight, isGradient, rng,
+                              lightIndex, lightSlot, lightPdf);
+
+        if (lightIndex != LIGHT_INDEX_NONE && lightPdf > 0.0)
+        {
+            const vec2 pointRnd = rnd16_2(seed, uint(Q2_RNG_LIGHT_POINT) + uint(s) * 2u) * 0.99;
+            LightSample light = sampleLight(lightSources[lightIndex], surf.position, pointRnd);
+
+            // Cap the solid angle of sphere/spot lights (Q2RTX firefly clamp).
+            // Keeps light-textured surfaces from overexposing their own face.
+            if (lightSources[lightIndex].lightType == LIGHT_TYPE_SPHERE ||
+                lightSources[lightIndex].lightType == LIGHT_TYPE_SPOT)
+            {
+                light.dw = min(light.dw, Q2_DIRECT_MAX_SPHERE_SOLID_ANGLE);
+            }
+
+            if (getLuminance(light.color) > 0.0)
+            {
+                const float vis = traceVisibility(surf, light.position, lightIndex);
+
+                // Adaptive shadow statistics for the next frames' CDF (occluded
+                // lights get a smaller mass -> sampled less -> stable choice).
+                q2AccumulateLightStats(cluster, lightSlot, surf.normal, vis);
+
+                vec3 d, s;
+                shade(surf, light, 1.0 / lightPdf, d, s);
+                directDiffuse += d * vis;
+                directSpecular += s * vis;
+            }
+        }
+    }
+    directDiffuse  *= (1.0 / float(Q2_NEE_LIGHT_SAMPLES));
+    directSpecular *= (1.0 / float(Q2_NEE_LIGHT_SAMPLES));
+
+    // 2) Sun (directional light) - always sampled, stable (Q2RTX get_sunlight)
+    if (globalUniform.directionalLightExists != 0)
+    {
+        const DirectionalLight sun = decodeAsDirectionalLight(lightSources[LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET]);
+        const vec2 sunRnd = rnd16_2(seed, Q2_RNG_SUN_DISK) * 0.99;
+        const LightSample sunLight = sampleDirectionalLight(sun, surf.position, sunRnd);
+
+        const float sunVis = traceVisibility(surf, sunLight.position, LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET);
+
+        vec3 d, s;
+        shade(surf, sunLight, 1.0, d, s); // pdf = 1 (sun is always sampled)
+        directDiffuse += d * sunVis;
+        directSpecular += s * sunVis;
+    }
+
+    // Demodulate for denoising and store (same outputs as before - the Q2
+    // adapter + ASVGF denoiser are unchanged).
+    imageStoreUnfilteredDirect(pix, directDiffuse);
+    imageStoreUnfilteredSpecular(pix, demodulateSpecular(directSpecular, surf.specularColor));
+    imageStore(framebufViewDirection, pix, vec4(-surf.toViewerDir, MAX_RAY_LENGTH));
+}
