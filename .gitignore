@@ -30,6 +30,8 @@ Misc/vq_pak/mkpak
 Misc/vq_pak/*.exe
 Misc/vq_pak/*.dSYM
 build/
+build*/
+build-*/
 .settings
 .project
 .cproject
