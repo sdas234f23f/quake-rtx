@@ -30,6 +30,10 @@ int r_framecount;	 // used for dlight push checking
 
 mplane_t frustum[4];
 
+// q2rtx: camera media type + lava effect flag (RT renderer post-processing)
+RgMediaType rt_cameramedia = RG_MEDIA_TYPE_VACUUM;
+qboolean    rt_lavaeffects = false;
+
 qboolean render_warp;
 int		 render_scale;
 
@@ -88,6 +92,23 @@ cvar_t r_lerplightstyles = {"r_lerplightstyles", "1", CVAR_ARCHIVE}; // 0=off; 1
 cvar_t gl_fullbrights = {"gl_fullbrights", "1", CVAR_ARCHIVE};
 cvar_t gl_farclip = {"gl_farclip", "16384", CVAR_ARCHIVE};
 cvar_t r_oldskyleaf = {"r_oldskyleaf", "0", CVAR_NONE};
+
+// q2rtx: camera near/far distances used by the RT renderer frame path
+#define RT_NEARCLIP 4
+float GL_GetCameraNear (float radfovx, float radfovy)
+{
+	const float w = 1.0f / tanf (radfovx * 0.5f);
+	const float h = 1.0f / tanf (radfovy * 0.5f);
+
+	// reduce near clip distance at high FOV's to avoid seeing through walls
+	const float d = 12.f * q_min (w, h);
+	return CLAMP (0.5f, d, RT_NEARCLIP);
+}
+
+float GL_GetCameraFar (void)
+{
+	return gl_farclip.value;
+}
 cvar_t r_drawworld = {"r_drawworld", "1", CVAR_NONE};
 cvar_t r_showtris = {"r_showtris", "0", CVAR_NONE};
 cvar_t r_showskel = {"r_showskel", "0", CVAR_NONE};

@@ -1,0 +1,21 @@
+maps/start.bsp -424 1856 -316 0 0 0 1
+maps/end.bsp -48 -32 200 0 0 0 1
+maps/end.bsp -448 408 96 13 13 219
+maps/e1m1.bsp 1312 1088 -368 -10 1880 -120
+maps/e1m5.bsp -552 2044 -84 0 0 0 1
+maps/e1m6.bsp -512 428 -112 -552 248 361
+maps/e1m6.bsp 720 804 84 0 0 0 1
+maps/e1m7.bsp 1024 56 -896 0 0 0 1
+maps/e2m3.bsp 1120 1776 -88 0 0 0 1
+maps/e2m6.bsp -988 504 -868 0 0 0 1
+maps/e3m2.bsp 1800 496 184 0 0 0 1
+maps/e3m3.bsp 1792 408 48 0 0 0 1
+maps/e3m4.bsp 676 248 192 0 0 0 1
+maps/e3m5.bsp 1416 -1582 -344 0 0 0 1
+maps/e3m5.bsp 1216 -1536 -52 0 0 0 1
+maps/e3m6.bsp 284 -3596 264 0 0 0 1
+maps/e3m7.bsp -452 1788 128 0 0 0 1
+maps/e3m7.bsp -1128 -308 -420 0 0 0 1
+maps/e3m7.bsp 592 192 -192 200 -30 1
+maps/e4m7.bsp 1456 -1856 168 0 0 0 1
+maps/e4m7.bsp 1008 -1856 48 344 -1622 300

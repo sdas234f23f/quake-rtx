@@ -31,6 +31,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "palette.h"
 #include "menu.h"
 #include "steam.h"
+#include "rt_material.h"
 
 #ifdef USE_SDL3
 #include <SDL3/SDL_vulkan.h>
@@ -84,6 +85,7 @@ static qboolean vid_changed = false;
 
 static void VID_Menu_RebuildModeList (void); // johnfitz
 static void VID_Restart_f (void);
+static void RT_Fog_Cmd (void); // q2rtx: Q2RTX-style fog volumes
 
 static void ClearAllStates (void);
 static void GL_InitInstance (void);
@@ -126,6 +128,154 @@ cvar_t		  rt_renderer = {"rt_renderer", "0", CVAR_ARCHIVE};
 // q2rtx: RT renderer command-batch globals and shader-reload flag
 rt_vulkanglobals_t vulkan_globals_rt;
 qboolean           request_shaders_reload = false;
+
+// q2rtx: RT renderer cvars (ported from vkquake-rt)
+#define CVAR_DEF_LIST( CVAR_DEF_T ) \
+	\
+	CVAR_DEF_T (rt_classic_render, "0") \
+	CVAR_DEF_T (rt_enable_pvs, "0") \
+	CVAR_DEF_T (rt_shadowrays, "2") \
+	CVAR_DEF_T (rt_indir2bounces, "0") \
+	CVAR_DEF_T (rt_antifirefly, "1") \
+	CVAR_DEF_T (rt_roughmin, "0.02") \
+    \
+	CVAR_DEF_T (rt_dlight_intensity, "3.0") \
+	CVAR_DEF_T (rt_dlight_radius, "0.02") \
+	\
+	CVAR_DEF_T (rt_plight_intensity, "3.0") \
+	CVAR_DEF_T (rt_plight_radius, "0.02") \
+	\
+	CVAR_DEF_T (rt_wlight_intensity, "3.0") \
+	CVAR_DEF_T (rt_wlight_radius, "0.01") \
+	\
+	CVAR_DEF_T (rt_elight_normaliz, "100") \
+	CVAR_DEF_T (rt_elight_default, "200") \
+	CVAR_DEF_T (rt_elight_default_mdl, "1000") \
+	CVAR_DEF_T (rt_elight_threshold, "-1") \
+    CVAR_DEF_T (rt_elight_radius, "0.01") \
+	\
+	CVAR_DEF_T (rt_poi_distthresh, "2") \
+	CVAR_DEF_T (rt_poi_distthresh_super, "3") \
+	CVAR_DEF_T (rt_poi_trigger, "1") \
+	CVAR_DEF_T (rt_poi_func, "1") \
+	CVAR_DEF_T (rt_poi_weapon, "1") \
+	CVAR_DEF_T (rt_poi_ammo, "1") \
+	CVAR_DEF_T (rt_poi_pwrup, "1") \
+	CVAR_DEF_T (rt_poi_health, "1") \
+	CVAR_DEF_T (rt_poi_armor, "1") \
+	CVAR_DEF_T (rt_poi_key, "1") \
+	\
+	CVAR_DEF_T (rt_sun, "0") \
+	CVAR_DEF_T (rt_sun_pitch, "60") \
+	CVAR_DEF_T (rt_sun_yaw, "-40") \
+	CVAR_DEF_T (rt_sun_preset, "0") \
+	CVAR_DEF_T (rt_flashlight, "0") \
+	\
+	CVAR_DEF_T (rt_muzzleoffs_x, "0") \
+	CVAR_DEF_T (rt_muzzleoffs_y, "-30") \
+	CVAR_DEF_T (rt_muzzleoffs_z, "100") \
+	\
+	CVAR_DEF_T (rt_sky, "9") \
+	CVAR_DEF_T (rt_sky_tint, "1.0") \
+	CVAR_DEF_T (rt_physical_sky, "0") \
+	CVAR_DEF_T (rt_sky_light_r, "255") \
+	CVAR_DEF_T (rt_sky_light_g, "255") \
+	CVAR_DEF_T (rt_sky_light_b, "255") \
+	CVAR_DEF_T (rt_sky_color_r, "255") \
+	CVAR_DEF_T (rt_sky_color_g, "255") \
+	CVAR_DEF_T (rt_sky_color_b, "255") \
+	CVAR_DEF_T (rt_sky_brightness, "1.0") \
+	CVAR_DEF_T (rt_brightness, "1.0") \
+	CVAR_DEF_T (rt_light_color_r, "255") \
+	CVAR_DEF_T (rt_light_color_g, "255") \
+	CVAR_DEF_T (rt_light_color_b, "255") \
+	CVAR_DEF_T (rt_sky_clouds, "0") \
+	CVAR_DEF_T (rt_sky_cloud_color_r, "255") \
+	CVAR_DEF_T (rt_sky_cloud_color_g, "255") \
+	CVAR_DEF_T (rt_sky_cloud_color_b, "255") \
+	CVAR_DEF_T (rt_sky_cloud_coverage, "0.4") \
+	CVAR_DEF_T (rt_sky_cloud_density, "0.7") \
+	CVAR_DEF_T (rt_sky_cloud_speed, "0.02") \
+	\
+	CVAR_DEF_T (rt_brush_metal, "0.0") \
+	CVAR_DEF_T (rt_brush_rough, "1.0") \
+	CVAR_DEF_T (rt_model_metal, "0.0") \
+	CVAR_DEF_T (rt_model_rough, "1.0") \
+    \
+	CVAR_DEF_T (rt_normalmap_stren, "1") \
+	CVAR_DEF_T (rt_emis_mapboost, "30") \
+	CVAR_DEF_T (rt_emis_maxscrcolor, "32") \
+	CVAR_DEF_T (rt_emis_fullbright_dflt, "32") \
+    \
+	CVAR_DEF_T (rt_reflrefr_depth, "2") \
+	CVAR_DEF_T (rt_refr_glass, "1.52") \
+	CVAR_DEF_T (rt_refr_water, "1.33") \
+	\
+	CVAR_DEF_T (rt_volume_type, "2") \
+	CVAR_DEF_T (rt_volume_far, "1000") \
+	CVAR_DEF_T (rt_volume_scatter, "0.3") \
+	CVAR_DEF_T (rt_volume_ambient, "2.0") \
+	CVAR_DEF_T (rt_volume_lintensity, "250") \
+	CVAR_DEF_T (rt_volume_lassymetry, "0.0") \
+	CVAR_DEF_T (rt_volume_lpitch, "70") \
+	CVAR_DEF_T (rt_volume_lyaw, "-40") \
+    \
+	CVAR_DEF_T (rt_water_aciddensity, "25") \
+	CVAR_DEF_T (rt_water_speed, "0.4") \
+	CVAR_DEF_T (rt_water_normstren, "1") \
+	CVAR_DEF_T (rt_water_normsharp, "5") \
+	CVAR_DEF_T (rt_water_scale, "1") \
+	\
+	CVAR_DEF_T (rt_portal_twirl, "1") \
+    \
+	CVAR_DEF_T (rt_sharpen, "0") \
+	CVAR_DEF_T (rt_renderscale, "0") \
+	CVAR_DEF_T (rt_vintage, "0") \
+	CVAR_DEF_T (rt_upscale_fsr2, "0") \
+	CVAR_DEF_T (rt_upscale_fsr31, "2") \
+	CVAR_DEF_T (rt_upscale_dlss, "0") \
+	\
+	CVAR_DEF_T (rt_sensit_dir, "0.4") \
+	CVAR_DEF_T (rt_sensit_indir, "0.06") \
+	CVAR_DEF_T (rt_sensit_spec, "0.03") \
+	\
+	CVAR_DEF_T (rt_globallight_mult, "5") \
+	CVAR_DEF_T (rt_globallight_r, "255") \
+	CVAR_DEF_T (rt_globallight_g, "255") \
+	CVAR_DEF_T (rt_globallight_b, "255") \
+	\
+	CVAR_DEF_T (rt_bloom_intensity, "1") \
+	CVAR_DEF_T (rt_bloom_emis_mult, "50") \
+	CVAR_DEF_T (rt_bloom, "0") \
+	\
+	CVAR_DEF_T (rt_ef_crt, "0") \
+	CVAR_DEF_T (rt_ef_chraber, "0.3") \
+	CVAR_DEF_T (rt_ef_waves_stren, "1") \
+	\
+	CVAR_DEF_T (rt_viewm_fovscale, "1.2") \
+	CVAR_DEF_T (rt_viewm_wide, "1.05") \
+	\
+	CVAR_DEF_T (rt_hud_minimal, "1") \
+	CVAR_DEF_T (rt_hud_padding, "8") \
+	\
+	CVAR_DEF_T (rt_debugflags, "0") \
+
+
+#define CVAR_DEF_T(name, default_value) cvar_t name = {#name, default_value, CVAR_ARCHIVE};
+	CVAR_DEF_LIST (CVAR_DEF_T)
+#undef CVAR_DEF_T
+
+enum
+{
+	RT_VINTAGE_OFF,
+	RT_VINTAGE_CRT,
+	RT_VINTAGE_200,
+	RT_VINTAGE_480,
+	RT_VINTAGE_720,
+
+	RT_VINTAGE__COUNT
+};
+
 cvar_t		  r_usesops = {"r_usesops", "1", CVAR_ARCHIVE};		// johnfitz
 #if defined(_DEBUG)
 static cvar_t r_raydebug = {"r_raydebug", "0", 0};
@@ -768,6 +918,354 @@ void GL_SetObjectName (uint64_t object, VkObjectType object_type, const char *na
 #endif
 }
 
+//==============================================================================
+//
+//	RT renderer (q2rtx) — instance init and commands
+//
+//==============================================================================
+
+static void RT_PrintMessage (const char *pMessage, void *pUserData)
+{
+	Con_Warning (pMessage);
+}
+
+static void RT_ReloadShaders (void)
+{
+	request_shaders_reload = true;
+}
+
+static void RT_SwitchRenderer (void)
+{
+	int newval = !CVAR_TO_BOOL (rt_classic_render);
+	Cvar_SetValueQuick (&rt_classic_render, newval);
+
+	// world geometry (incl. portals) is only uploaded once per map,
+	// so reload it to pick up the new renderer mode
+	R_NewMap ();
+}
+
+static vec3_t rt_water_color = {171 / 255.0f, 193 / 255.0f, 210 / 255.0f};
+static void RT_WaterColor(void)
+{
+	if (Cmd_Argc () != 4)
+	{
+		Con_Printf ("current: %d %d %d\n", (int)(rt_water_color[0] * 255), (int)(rt_water_color[1] * 255), (int)(rt_water_color[2] * 255));
+		Con_Printf ("usage: <r 0..255> <g 0..255> <b 0..255>\n");
+		return;
+	}
+
+	RT_VEC3_SET (
+		rt_water_color,
+		strtof (Cmd_Argv (1), NULL) / 255.0f,
+		strtof (Cmd_Argv (2), NULL) / 255.0f,
+		strtof (Cmd_Argv (3), NULL) / 255.0f );
+}
+
+static vec3_t rt_acid_color = {0 / 255.0f, 169 / 255.0f, 145 / 255.0f};
+static void RT_AcidColor(void)
+{
+	if (Cmd_Argc () != 4)
+	{
+		Con_Printf ("current: %d %d %d\n", (int)(rt_acid_color[0] * 255), (int)(rt_acid_color[1] * 255), (int)(rt_acid_color[2] * 255));
+		Con_Printf ("usage: <r 0..255> <g 0..255> <b 0..255>\n");
+		return;
+	}
+
+	RT_VEC3_SET (
+		rt_acid_color,
+		strtof (Cmd_Argv (1), NULL) / 255.0f,
+		strtof (Cmd_Argv (2), NULL) / 255.0f,
+		strtof (Cmd_Argv (3), NULL) / 255.0f );
+}
+
+/*
+===================
+RT_SunPreset_f
+
+Applies the rt_sun_preset colors directly to rt_sky_light_r/g/b so
+that the sun and its volumetric shafts share the same color without
+affecting the other light sources (which use rt_globallight_*).
+Preset 0 = manual mode (rt_sky_light_* are used as-is).
+===================
+*/
+static void RT_SunPreset_f (cvar_t *var)
+{
+	const int preset = CLAMP (0, CVAR_TO_INT32 (rt_sun_preset), 7);
+
+	if (preset == 0)
+	{
+		return; // manual, keep user values
+	}
+
+	// presets: [1] warm, [2] daylight, [3] neutral-white, [4] golden sunset, [5] cold/overcast, [6] purple (Q1 style), [7] cold blue
+	static const int presets[8][3] = {
+		{0, 0, 0},
+		{255, 214, 163},
+		{255, 235, 200},
+		{255, 246, 230},
+		{255, 178, 92},
+		{200, 216, 255},
+		{168, 118, 218},
+		{140, 180, 255},
+	};
+
+	Cvar_SetValueQuick (&rt_sky_light_r, presets[preset][0]);
+	Cvar_SetValueQuick (&rt_sky_light_g, presets[preset][1]);
+	Cvar_SetValueQuick (&rt_sky_light_b, presets[preset][2]);
+}
+
+/*
+===================
+Q2RTX-style fog volumes (new core path)
+
+A fog volume is an axis-aligned box filled with uniform or gradient fog,
+defined by two points on any diagonal. Up to RG_MAX_FOG_VOLUMES volumes.
+
+Usage:
+  fog -v <index> -a <x,y,z|here> -b <x,y,z|here> -c <r,g,b> -d <distance> -f <face>
+  fog -v <index> -p    print the volume
+  fog -v <index> -r    reset the volume
+  fog -R               reset all volumes
+
+  -d: distance at which objects in the fog are 50% visible
+  -f: softface where the density is zero: none, xa, xb, ya, yb, za, zb
+===================
+*/
+static RgFogVolume rt_fog_volumes[RG_MAX_FOG_VOLUMES];
+
+static void RT_Fog_ParsePoint (const char *s, float *out)
+{
+	extern vec3_t r_origin;
+
+	if (!strcmp (s, "here"))
+	{
+		VectorCopy (r_origin, out);
+		return;
+	}
+
+	if (3 != sscanf (s, "%f,%f,%f", &out[0], &out[1], &out[2]))
+	{
+		Con_Printf ("invalid coordinates '%s'\n", s);
+	}
+}
+
+static uint32_t RT_Fog_ParseSoftFace (const char *s)
+{
+	if (!strcmp (s, "xa")) return 1;
+	if (!strcmp (s, "xb")) return 2;
+	if (!strcmp (s, "ya")) return 3;
+	if (!strcmp (s, "yb")) return 4;
+	if (!strcmp (s, "za")) return 5;
+	if (!strcmp (s, "zb")) return 6;
+	return 0; // none or unknown
+}
+
+static const char *RT_Fog_SoftFaceName (uint32_t softface)
+{
+	static const char *names[] = {"none", "xa", "xb", "ya", "yb", "za", "zb"};
+	if (softface > 6)
+	{
+		softface = 0;
+	}
+	return names[softface];
+}
+
+static void RT_Fog_PrintVolume (int index, const RgFogVolume *vol)
+{
+	Con_Printf ("fog -v %d -a %.2f,%.2f,%.2f -b %.2f,%.2f,%.2f -c %.2f,%.2f,%.2f -d %.0f -f %s\n",
+	            index,
+	            vol->pointA.data[0], vol->pointA.data[1], vol->pointA.data[2],
+	            vol->pointB.data[0], vol->pointB.data[1], vol->pointB.data[2],
+	            vol->color.data[0], vol->color.data[1], vol->color.data[2],
+	            vol->halfExtinctionDistance,
+	            RT_Fog_SoftFaceName (vol->softface));
+}
+
+static void RT_Fog_Cmd (void)
+{
+	const int argc = Cmd_Argc ();
+	if (argc <= 1)
+	{
+		Con_Printf ("usage: fog -v <index> -a <x,y,z|here> -b <x,y,z|here> -c <r,g,b> -d <distance> -f <none|xa|xb|ya|yb|za|zb>\n");
+		return;
+	}
+
+	int          index = -1;
+	RgFogVolume *vol   = NULL;
+
+	for (int i = 1; i < argc; i++)
+	{
+		const char *arg = Cmd_Argv (i);
+
+		if (!strcmp (arg, "-h"))
+		{
+			Con_Printf ("Set parameters of a Q2RTX-style fog volume.\n");
+			return;
+		}
+		else if (!strcmp (arg, "-v") && i + 1 < argc)
+		{
+			index = atoi (Cmd_Argv (++i));
+			if (index < 0 || index >= RG_MAX_FOG_VOLUMES)
+			{
+				Con_Printf ("invalid volume index '%d'\n", index);
+				return;
+			}
+			vol = &rt_fog_volumes[index];
+		}
+		else if (!strcmp (arg, "-a") && i + 1 < argc)
+		{
+			if (!vol) goto no_volume;
+			RT_Fog_ParsePoint (Cmd_Argv (++i), vol->pointA.data);
+		}
+		else if (!strcmp (arg, "-b") && i + 1 < argc)
+		{
+			if (!vol) goto no_volume;
+			RT_Fog_ParsePoint (Cmd_Argv (++i), vol->pointB.data);
+		}
+		else if (!strcmp (arg, "-c") && i + 1 < argc)
+		{
+			if (!vol) goto no_volume;
+			RT_Fog_ParsePoint (Cmd_Argv (++i), vol->color.data);
+		}
+		else if (!strcmp (arg, "-d") && i + 1 < argc)
+		{
+			if (!vol) goto no_volume;
+			vol->halfExtinctionDistance = atof (Cmd_Argv (++i));
+		}
+		else if (!strcmp (arg, "-f") && i + 1 < argc)
+		{
+			if (!vol) goto no_volume;
+			vol->softface = RT_Fog_ParseSoftFace (Cmd_Argv (++i));
+		}
+		else if (!strcmp (arg, "-p"))
+		{
+			if (!vol) goto no_volume;
+			RT_Fog_PrintVolume (index, vol);
+		}
+		else if (!strcmp (arg, "-r"))
+		{
+			if (!vol) goto no_volume;
+			memset (vol, 0, sizeof (*vol));
+		}
+		else if (!strcmp (arg, "-R"))
+		{
+			memset (rt_fog_volumes, 0, sizeof (rt_fog_volumes));
+		}
+		else
+		{
+			Con_Printf ("unknown fog option '%s'\n", arg);
+			return;
+		}
+	}
+
+	// push the volumes to the renderer (inactive ones are skipped there)
+	rgSetFogVolumes (vulkan_globals_rt.instance, RG_MAX_FOG_VOLUMES, rt_fog_volumes);
+	return;
+
+no_volume:
+	Con_Printf ("volume not specified\n");
+}
+
+/*
+===============
+RT_GL_InitInstance
+
+Creates the RT renderer instance (rgCreateInstance) instead of the native
+Vulkan instance, and registers the RT console commands.
+===============
+*/
+static void RT_GL_InitInstance (void)
+{
+#ifdef RG_USE_SURFACE_WIN32
+	// SDL3 exposes the native window handles via properties
+	RgWin32SurfaceCreateInfo win32Info = {
+		.hinstance = (HINSTANCE)SDL_GetPointerProperty (SDL_GetWindowProperties (draw_context), SDL_PROP_WINDOW_WIN32_INSTANCE_POINTER, NULL),
+		.hwnd = (HWND)SDL_GetPointerProperty (SDL_GetWindowProperties (draw_context), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL),
+	};
+#endif
+
+	const char pShaderPath[] = RT_OVERRIDEN_FOLDER "shaders/";
+	const char pBlueNoisePath[] = RT_OVERRIDEN_FOLDER "BlueNoise_LDR_RGBA_128.ktx2";
+	const char pWaterTexturePath[] = RT_OVERRIDEN_FOLDER "WaterNormal_n.ktx2";
+
+	RgInstanceCreateInfo info = {
+		.pAppName = "QuakeRT",
+		.pAppGUID = "8d1f551a-b0e4-4365-985c-5e1182f3c54a",
+
+#ifdef RG_USE_SURFACE_WIN32
+		.pWin32SurfaceInfo = &win32Info,
+#endif
+
+		.pfnPrint = RT_PrintMessage,
+
+		.pShaderFolderPath = pShaderPath,
+		.pBlueNoiseFilePath = pBlueNoisePath,
+
+		.primaryRaysMaxAlbedoLayers = 2,
+		.indirectIlluminationMaxAlbedoLayers = 1,
+		.rayCullBackFacingTriangles = 1,
+		.allowGeometryWithSkyFlag = 1,
+
+		.rasterizedMaxVertexCount = 1 << 18,
+		.rasterizedMaxIndexCount = 1 << 19,
+
+		.rasterizedVertexColorGamma = true,
+
+		.rasterizedSkyCubemapSize = 256,
+
+		.maxTextureCount = 4096,
+		.textureSamplerForceMinificationFilterLinear = true,
+		.textureSamplerForceNormalMapFilterLinear = true,
+
+		.pOverridenTexturesFolderPath = RT_OVERRIDEN_FOLDER "mat",
+		.pOverridenTexturesFolderPathDeveloper = RT_OVERRIDEN_FOLDER "matdev",
+
+		.originalAlbedoAlphaTextureIsSRGB = true,
+		.originalRoughnessMetallicEmissionTextureIsSRGB = false,
+		.originalNormalTextureIsSRGB = false,
+
+		.overridenAlbedoAlphaTextureIsSRGB = true,
+		.overridenRoughnessMetallicEmissionTextureIsSRGB = false,
+		.overridenNormalTextureIsSRGB = false,
+
+		.pWaterNormalTexturePath = pWaterTexturePath,
+	};
+
+	RgResult r = rgCreateInstance (&info, &vulkan_globals_rt.instance);
+	RG_CHECK (r);
+
+	// Q2RTX-style .mat materials
+	RT_MAT_Init ();
+
+	Cmd_AddCommand ("rt_pfnreloadshaders", RT_ReloadShaders);
+	Cmd_AddCommand ("rt_pfnswitch", RT_SwitchRenderer);
+	// TODO(rt-port): rt_pfnwlight_add/remove + rt_pfnportal are registered
+	// here in vkquake-rt; add them once the game-side light/portal commands
+	// (gl_rlight.c / r_world.c) are ported.
+	Cmd_AddCommand ("rt_water_color", RT_WaterColor);
+	Cmd_AddCommand ("rt_water_acidcolor", RT_AcidColor);
+	Cmd_AddCommand ("fog", RT_Fog_Cmd);
+
+	// identity view matrix until the game-side port fills it in R_RenderView
+	{
+		float *m = vulkan_globals_rt.view_matrix;
+		memset (m, 0, 16 * sizeof (float));
+		m[0] = m[5] = m[10] = m[15] = 1.0f;
+	}
+
+	vulkan_globals_rt.primary_cb_context.batch_indices = Mem_Alloc (sizeof (uint32_t) * MAX_BATCH_INDICES);
+	vulkan_globals_rt.primary_cb_context.batch_verts = Mem_Alloc (sizeof (RgVertex) * MAX_BATCH_VERTS);
+	vulkan_globals_rt.primary_cb_context.batch_verts_count = 0;
+	vulkan_globals_rt.primary_cb_context.batch_indices_count = 0;
+	for (int i = 0; i < RT_CBX_NUM; i++)
+	{
+		vulkan_globals_rt.secondary_cb_contexts[i].batch_indices = Mem_Alloc (sizeof (uint32_t) * MAX_BATCH_INDICES);
+		vulkan_globals_rt.secondary_cb_contexts[i].batch_verts = Mem_Alloc (sizeof (RgVertex) * MAX_BATCH_VERTS);
+		vulkan_globals_rt.secondary_cb_contexts[i].batch_verts_count = 0;
+		vulkan_globals_rt.secondary_cb_contexts[i].batch_indices_count = 0;
+	}
+}
+
 /*
 ===============
 GL_InitInstance
@@ -778,6 +1276,13 @@ static void GL_InitInstance (void)
 	VkResult	 err;
 	uint32_t	 i;
 	unsigned int sdl_extension_count;
+
+	if (CVAR_TO_BOOL (rt_renderer))
+	{
+		RT_GL_InitInstance ();
+		return;
+	}
+
 	vulkan_globals.debug_utils = false;
 
 #ifdef USE_SDL3
@@ -3266,6 +3771,545 @@ static void GL_DestroyRenderResources (void)
 	GL_DestroyMainRenderPasses ();
 }
 
+//==============================================================================
+//
+//	RT renderer (q2rtx) — frame path (rgStartFrame / rgDrawFrame)
+//
+//==============================================================================
+
+#define FROMCOLOR255(a) {((a)[0] / 255.0f), ((a)[1] / 255.0f), ((a)[2] / 255.0f)}
+
+extern float  GL_GetCameraNear (float radfovx, float radfovy);
+extern float  GL_GetCameraFar (void);
+extern float  r_fovx, r_fovy;
+extern cvar_t r_fastsky;
+extern cvar_t r_waterwarp;
+extern float  skyflatcolor[3];
+extern float  rt_dmg_value;
+extern qboolean rt_dmg_inthisframe;
+extern RgMediaType rt_cameramedia;
+extern qboolean rt_lavaeffects;
+
+typedef struct rt_end_rendering_parms_s
+{
+	float   vid_width;
+	float   vid_height;
+} rt_end_rendering_parms_t;
+
+static RgRenderSharpenTechnique GetSharpenTechniqueFromCvar ()
+{
+	int vintage = CVAR_TO_INT32 (rt_vintage);
+	int t = CVAR_TO_INT32 (rt_sharpen);
+
+	switch (t)
+	{
+	case 2:
+		return RG_RENDER_SHARPEN_TECHNIQUE_AMD_CAS;
+	case 1:
+		return RG_RENDER_SHARPEN_TECHNIQUE_NAIVE;
+	default:
+		// to accentuate a chunky look, because of the linear (not nearest) downscale mode
+		if (vintage == RT_VINTAGE_200 || vintage == RT_VINTAGE_480)
+		{
+			return RG_RENDER_SHARPEN_TECHNIQUE_AMD_CAS;
+		}
+		return RG_RENDER_SHARPEN_TECHNIQUE_NONE;
+	}
+}
+
+static void UpscaleCvarsToRtgl (RgDrawFrameRenderResolutionParams *pDst)
+{
+	int nvDlss = CVAR_TO_INT32 (rt_upscale_dlss);
+	int amdFsr = CVAR_TO_INT32 (rt_upscale_fsr2);
+	int amdFsr31 = CVAR_TO_INT32 (rt_upscale_fsr31);
+
+	switch (nvDlss)
+	{
+	case 1:
+		// start with Quality
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_QUALITY;
+		break;
+	case 2:
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_BALANCED;
+		break;
+	case 3:
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_PERFORMANCE;
+		break;
+	case 4:
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_ULTRA_PERFORMANCE;
+		break;
+
+	case 5:
+		// use DLSS with rt_renderscale
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_CUSTOM;
+		break;
+
+	default:
+		nvDlss = 0;
+		break;
+	}
+
+	switch (amdFsr)
+	{
+	case 1:
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_AMD_FSR2;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_QUALITY;
+		break;
+	case 2:
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_AMD_FSR2;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_BALANCED;
+		break;
+	case 3:
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_AMD_FSR2;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_PERFORMANCE;
+		break;
+	case 4:
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_AMD_FSR2;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_ULTRA_PERFORMANCE;
+		break;
+
+	case 5:
+		// use FSR2 with rt_renderscale
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_AMD_FSR2;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_CUSTOM;
+		break;
+
+	default:
+		amdFsr = 0;
+		break;
+	}
+
+	switch (amdFsr31)
+	{
+	case 1:
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_AMD_FSR3;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_NATIVE_AA;
+		break;
+	case 2:
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_AMD_FSR3;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_QUALITY;
+		break;
+	case 3:
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_AMD_FSR3;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_BALANCED;
+		break;
+	case 4:
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_AMD_FSR3;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_PERFORMANCE;
+		break;
+	case 5:
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_AMD_FSR3;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_ULTRA_PERFORMANCE;
+		break;
+
+	default:
+		amdFsr31 = 0;
+		break;
+	}
+
+	// both disabled
+	if (nvDlss == 0 && amdFsr == 0 && amdFsr31 == 0)
+	{
+		pDst->upscaleTechnique = RG_RENDER_UPSCALE_TECHNIQUE_NEAREST;
+		pDst->resolutionMode = RG_RENDER_RESOLUTION_MODE_CUSTOM;
+	}
+
+	if (amdFsr)
+	{
+		pDst->sharpenTechnique = RG_RENDER_SHARPEN_TECHNIQUE_AMD_CAS;
+	}
+	else
+	{
+		pDst->sharpenTechnique = GetSharpenTechniqueFromCvar ();
+	}
+}
+
+static void ResolutionToRtgl (RgDrawFrameRenderResolutionParams *dst, const RgExtent2D winsize, RgExtent2D *storage)
+{
+	const float aspect = (float)winsize.width / (float)winsize.height;
+
+	if (CVAR_TO_INT32 (rt_renderscale) > 0)
+	{
+		float scale = (float)CVAR_TO_INT32 (rt_renderscale) / 100.0f;
+		scale = CLAMP (scale, 0.2f, 1.0f);
+
+		dst->customRenderSize.width = (uint32_t)(scale * winsize.width);
+		dst->customRenderSize.height = (uint32_t)(scale * winsize.height);
+		dst->pPixelizedRenderSize = NULL;
+
+		return;
+	}
+	else
+	{
+		if (CVAR_TO_INT32 (rt_vintage) != RT_VINTAGE_OFF)
+		{
+			uint32_t h_pixelized = 0;
+			uint32_t h_render = 0;
+
+			switch (CVAR_TO_INT32 (rt_vintage))
+			{
+			case RT_VINTAGE_200:
+				h_pixelized = 200;
+				h_render = 400;
+				break;
+
+			case RT_VINTAGE_480:
+				h_pixelized = 480;
+				h_render = 600;
+				break;
+
+			case RT_VINTAGE_CRT:
+				h_pixelized = 480;
+				h_render = 480;
+				break;
+
+			case RT_VINTAGE_720:
+				h_pixelized = 720;
+				h_render = 720;
+				break;
+
+			default:
+				Cvar_SetValueQuick (&rt_vintage, 0);
+				dst->customRenderSize = winsize;
+				dst->pPixelizedRenderSize = NULL;
+				return;
+			}
+
+			assert (h_render > 0 && h_pixelized > 0);
+
+			storage->height = h_pixelized;
+			storage->width = (uint32_t)(h_pixelized * aspect);
+			dst->pPixelizedRenderSize = storage;
+			dst->customRenderSize.height = h_render;
+			dst->customRenderSize.width = (uint32_t)(h_render * aspect);
+
+			return;
+		}
+	}
+
+	dst->customRenderSize = winsize;
+	dst->pPixelizedRenderSize = NULL;
+}
+
+/*
+=================
+RT_GL_BeginRenderingTask
+=================
+*/
+void RT_GL_BeginRenderingTask (void *unused)
+{
+	RgStartFrameInfo info = {
+		.requestVSync = CVAR_TO_BOOL (vid_vsync),
+		.requestShaderReload = request_shaders_reload,
+	};
+
+	RgResult r = rgStartFrame (vulkan_globals_rt.instance, &info);
+	RG_CHECK (r);
+
+	request_shaders_reload = false;
+
+	{
+		rt_cb_context_t *cbx = &vulkan_globals_rt.primary_cb_context;
+		cbx->current_canvas = CANVAS_INVALID;
+	}
+
+	for (int cbx_index = 0; cbx_index < RT_CBX_NUM; ++cbx_index)
+	{
+		rt_cb_context_t *cbx = &vulkan_globals_rt.secondary_cb_contexts[cbx_index];
+		cbx->current_canvas = CANVAS_INVALID;
+	}
+}
+
+/*
+=================
+RT_GL_EndRenderingTask
+=================
+*/
+static void RT_GL_EndRenderingTask (rt_end_rendering_parms_t *parms)
+{
+	RgExtent2D       pixstorage = {0};
+	const RgExtent2D winsize = {.width = parms->vid_width, .height = parms->vid_height};
+
+	RgDrawFrameRenderResolutionParams resolution_params = {0};
+	ResolutionToRtgl (&resolution_params, winsize, &pixstorage);
+	UpscaleCvarsToRtgl (&resolution_params);
+
+	RgDrawFrameIlluminationParams illum_params = {
+		.maxBounceShadows = CVAR_TO_UINT32 (rt_shadowrays),
+		.enableSecondBounceForIndirect = CVAR_TO_BOOL (rt_indir2bounces),
+		.cellWorldSize = METRIC_TO_QUAKEUNIT (2.0f),
+		.directDiffuseSensitivityToChange = CVAR_TO_FLOAT (rt_sensit_dir),
+		.indirectDiffuseSensitivityToChange = CVAR_TO_FLOAT (rt_sensit_indir),
+		.specularSensitivityToChange = CVAR_TO_FLOAT (rt_sensit_spec),
+		.polygonalLightSpotlightFactor = 2.0f,
+		.lightUniqueIdIgnoreFirstPersonViewerShadows = NULL,
+	};
+
+	RgDrawFrameBloomParams bloom_params = {
+		.bloomIntensity = (CVAR_TO_BOOL (rt_classic_render) || !CVAR_TO_BOOL (rt_bloom)) ? 0 : CVAR_TO_FLOAT (rt_bloom_intensity),
+		.inputThreshold = 0.0f,
+		.bloomEmissionMultiplier = CVAR_TO_FLOAT (rt_bloom_emis_mult),
+	};
+
+	RgDrawFrameReflectRefractParams refl_refr_params = {
+		.maxReflectRefractDepth = CVAR_TO_UINT32 (rt_reflrefr_depth),
+		.typeOfMediaAroundCamera = rt_cameramedia,
+		.indexOfRefractionGlass = CVAR_TO_FLOAT (rt_refr_glass),
+		.indexOfRefractionWater = CVAR_TO_FLOAT (rt_refr_water),
+		.waterWaveSpeed = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_water_speed)),
+		.waterWaveNormalStrength = CVAR_TO_FLOAT (rt_water_normstren),
+		.waterColor = RT_VEC3 (rt_water_color),
+		.acidColor = RT_VEC3 (rt_acid_color),
+		.acidDensity = CVAR_TO_FLOAT (rt_water_aciddensity),
+		.waterWaveTextureDerivativesMultiplier = CVAR_TO_FLOAT (rt_water_normsharp),
+		.waterTextureAreaScale = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_water_scale)),
+		.portalNormalTwirl = CVAR_TO_BOOL (rt_portal_twirl),
+	};
+	// because 1 quake unit is not 1 meter
+	refl_refr_params.waterColor.data[0] = powf (refl_refr_params.waterColor.data[0], 1.0f / METRIC_TO_QUAKEUNIT (1.0f));
+	refl_refr_params.waterColor.data[1] = powf (refl_refr_params.waterColor.data[1], 1.0f / METRIC_TO_QUAKEUNIT (1.0f));
+	refl_refr_params.waterColor.data[2] = powf (refl_refr_params.waterColor.data[2], 1.0f / METRIC_TO_QUAKEUNIT (1.0f));
+	refl_refr_params.acidColor.data[0] = powf (refl_refr_params.acidColor.data[0], 1.0f / METRIC_TO_QUAKEUNIT (1.0f));
+	refl_refr_params.acidColor.data[1] = powf (refl_refr_params.acidColor.data[1], 1.0f / METRIC_TO_QUAKEUNIT (1.0f));
+	refl_refr_params.acidColor.data[2] = powf (refl_refr_params.acidColor.data[2], 1.0f / METRIC_TO_QUAKEUNIT (1.0f));
+
+	float skyMult = 1.0f / CLAMP (0.02f, RT_Luminance (skyflatcolor), 1.0f);
+	skyMult *= CVAR_TO_FLOAT (rt_sky);
+
+	// sky brightness (all sky types, incl. procedural) + master brightness
+	const float skyBrightness = CVAR_TO_FLOAT (rt_sky_brightness) * CVAR_TO_FLOAT (rt_brightness);
+
+	const int usePhysicalSky = CVAR_TO_BOOL (rt_physical_sky) != 0;
+
+	vec3_t sky_base_color;
+
+	if (usePhysicalSky)
+	{
+		// the procedural sky is tinted by the sun preset color (rt_sky_light_*)
+		RT_INIT_SKY_LIGHT_COLOR (sky_base_color);
+	}
+	else
+	{
+		VectorCopy (skyflatcolor, sky_base_color);
+	}
+	// sky display color (rt_sky_color_*) + master brightness. The sky
+	// display is decoupled from the sun light color (rt_sky_light_*), so the
+	// sky can be tinted or blackened without killing the sun light.
+	VectorScale (sky_base_color, skyBrightness, sky_base_color);
+	RT_APPLY_SKY_COLOR (sky_base_color);
+
+	RgDrawFrameSkyParams sky_params = {
+		.skyType = CVAR_TO_BOOL (r_fastsky) ? RG_SKY_TYPE_COLOR
+		         : usePhysicalSky ? RG_SKY_TYPE_PROCEDURAL
+		         : RG_SKY_TYPE_RASTERIZED_GEOMETRY,
+		.skyColorDefault = RT_VEC3 (sky_base_color),
+		// for the procedural sky this is passed as its brightness (skyParams[0]);
+		// for rasterized/color skies it scales the sky in reflections (getSky)
+		.skyColorMultiplier = usePhysicalSky ? skyBrightness : skyMult * skyBrightness,
+		// repurposed field: carries the procedural sky tint strength (rt_sky_tint)
+		.skyColorSaturation = CVAR_TO_FLOAT (rt_sky_tint),
+		.skyViewerPosition = RT_VEC3 (r_origin),
+	};
+
+	if (usePhysicalSky)
+	{
+		// procedural cloud params are packed into the otherwise-unused skyCubemapRotationTransform field:
+		// [0..2] cloud color rgb, [3] coverage, [4] density, [5] drift speed, [6] enabled
+		float *c = &sky_params.skyCubemapRotationTransform.matrix[0][0];
+		c[0] = CVAR_TO_FLOAT (rt_sky_cloud_color_r) / 255.0f;
+		c[1] = CVAR_TO_FLOAT (rt_sky_cloud_color_g) / 255.0f;
+		c[2] = CVAR_TO_FLOAT (rt_sky_cloud_color_b) / 255.0f;
+		c[3] = CVAR_TO_FLOAT (rt_sky_cloud_coverage);
+		c[4] = CVAR_TO_FLOAT (rt_sky_cloud_density);
+		c[5] = CVAR_TO_FLOAT (rt_sky_cloud_speed);
+		c[6] = CVAR_TO_BOOL (rt_sky_clouds) ? 1.0f : 0.0f;
+		c[7] = c[8] = 0.0f;
+	}
+
+	vec3_t volume_light_angles;
+	vec3_t volume_light_color;
+
+	if (CVAR_TO_BOOL (rt_sun))
+	{
+		RT_VEC3_SET (volume_light_angles, CVAR_TO_FLOAT (rt_sun_pitch), CVAR_TO_FLOAT (rt_sun_yaw), 0);
+		RT_INIT_SKY_LIGHT_COLOR (volume_light_color);
+	}
+	else
+	{
+		RT_VEC3_SET (volume_light_angles, CVAR_TO_FLOAT (rt_volume_lpitch), CVAR_TO_FLOAT (rt_volume_lyaw), 0);
+		VectorCopy (skyflatcolor, volume_light_color);
+	}
+
+	// master brightness + RGB tint for the volumetric light and ambient
+	VectorScale (volume_light_color, CVAR_TO_FLOAT (rt_volume_lintensity) * CVAR_TO_FLOAT (rt_brightness), volume_light_color);
+	RT_APPLY_LIGHT_TINT (volume_light_color);
+
+	vec3_t volume_ambient_color;
+	VectorScale (skyflatcolor, CVAR_TO_FLOAT (rt_volume_ambient) * CVAR_TO_FLOAT (rt_brightness), volume_ambient_color);
+	RT_APPLY_LIGHT_TINT (volume_ambient_color);
+
+	RgDrawFrameVolumetricParams volumetric_params = {
+		.enable = CVAR_TO_UINT32 (rt_volume_type) != 0,
+		.useSimpleDepthBased = CVAR_TO_UINT32 (rt_volume_type) == 1 || CVAR_TO_BOOL (rt_classic_render),
+		.volumetricFar = CVAR_TO_FLOAT (rt_volume_far),
+		.ambientColor = RT_VEC3 (volume_ambient_color),
+		.scaterring = CVAR_TO_FLOAT (rt_volume_scatter),
+		.sourceColor = RT_VEC3 (volume_light_color),
+		.sourceDirection = RT_AnglesToDir (volume_light_angles),
+		.sourceAssymetry = CVAR_TO_FLOAT (rt_volume_lassymetry),
+	};
+
+	RgDrawFrameTexturesParams texture_params = {
+		.dynamicSamplerFilter = CVAR_TO_INT32 (vid_filter) == 1 ? RG_SAMPLER_FILTER_NEAREST : RG_SAMPLER_FILTER_LINEAR,
+		.normalMapStrength = CVAR_TO_FLOAT (rt_normalmap_stren),
+		.emissionMapBoost = CVAR_TO_FLOAT (rt_emis_mapboost),
+		.emissionMaxScreenColor = CVAR_TO_FLOAT (rt_emis_maxscrcolor),
+		.minRoughness = CVAR_TO_FLOAT (rt_roughmin),
+	};
+
+	RgDrawFrameLensFlareParams lens_flare_params = {
+		.lensFlareBlendFuncSrc = RG_BLEND_FACTOR_SRC_ALPHA,
+		.lensFlareBlendFuncDst = RG_BLEND_FACTOR_ONE,
+	};
+
+	RgDrawFrameLightmapParams lightmap_params = {
+		.enableLightmaps = CVAR_TO_BOOL (rt_classic_render),
+		.lightmapLayerIndex = 1,
+	};
+
+	RgPostEffectCRT crt_effect = {
+		.isActive = CVAR_TO_BOOL (rt_ef_crt) || CVAR_TO_INT32 (rt_vintage) == RT_VINTAGE_CRT,
+	};
+
+	RgPostEffectChromaticAberration chromatic_aberration_effect = {
+		.isActive = CVAR_TO_FLOAT (rt_ef_chraber) > 0.0f,
+		.transitionDurationIn = 0,
+		.transitionDurationOut = 0,
+		.intensity = CVAR_TO_FLOAT (rt_ef_chraber),
+	};
+
+	RgPostEffectColorTint tint_quad = {
+		.isActive = true,
+		.transitionDurationIn = 1.0f,
+		.transitionDurationOut = 1.0f,
+		.intensity = 4.0f,
+		.color = {0.25f, 0.0f, 1.0f},
+	};
+	RgPostEffectColorTint tint_invuln = {
+		.isActive = true,
+		.transitionDurationIn = 1.0f,
+		.transitionDurationOut = 1.0f,
+		.intensity = 4.0f,
+		.color = {1.0f, 0.0f, 0.0f},
+	};
+	RgPostEffectColorTint tint_lava = {
+		.isActive = true,
+		.transitionDurationIn = 0.05f,
+		.transitionDurationOut = 0.5f,
+		.intensity = 10.0f,
+		.color = {1.0f, 0.1f, 0.0f},
+	};
+	RgPostEffectColorTint tint_radsuit = {
+		.isActive = true,
+		.transitionDurationIn = 1.0f,
+		.transitionDurationOut = 1.0f,
+		.intensity = 1.0f,
+		.color = {0.2f, 1.0f, 0.4f},
+	};
+	RgPostEffectColorTint tint_bonus = {
+		.isActive = true,
+		.transitionDurationIn = 0.0f,
+		.transitionDurationOut = 0.7f,
+		.intensity = 0.5f,
+		.color = {0.85f, 0.72f, 0.27f},
+	};
+	RgPostEffectColorTint tint_damage = {
+		.isActive = true,
+		.transitionDurationIn = 0.0f,
+		.transitionDurationOut = 0.2f + rt_dmg_value * 0.8f,
+		.intensity = 1.0f,
+		.color = FROMCOLOR255 (cl.cshifts[CSHIFT_DAMAGE].destcolor),
+	};
+
+	static RgPostEffectColorTint tint_effect = {0}; // static, so prev state's transition durations are preserved
+	tint_effect.isActive = false;
+	if (cl.stats[STAT_HEALTH] > 0)
+	{
+	    if (cl.items & IT_QUAD) tint_effect = tint_quad;
+	    else if (cl.items & IT_INVULNERABILITY) tint_effect = tint_invuln;
+	    else if (rt_lavaeffects) tint_effect = tint_lava;
+	    else if (cl.items & IT_SUIT) tint_effect = tint_radsuit;
+	    else if (rt_dmg_inthisframe) tint_effect = tint_damage;
+	    else if (cl.cshifts[CSHIFT_BONUS].percent > 0) tint_effect = tint_bonus;
+	}
+	rt_dmg_inthisframe = false;
+
+    RgPostEffectRadialBlur radial_effect = {
+		.isActive = (cl.items & (IT_QUAD | IT_INVULNERABILITY)) && cl.stats[STAT_HEALTH] > 0,
+		.transitionDurationIn = 1.0f,
+		.transitionDurationOut = 2.0f,
+	};
+
+	RgPostEffectWaves waves_effect = {
+		.isActive = rt_cameramedia != RG_MEDIA_TYPE_VACUUM,
+		.transitionDurationIn = 0.1f,
+		.transitionDurationOut = 0.75f,
+		.amplitude = CVAR_TO_FLOAT (rt_ef_waves_stren) * 0.01f,
+		.speed = 1.0f,
+		.xMultiplier = 0.5f,
+	};
+
+	RgDrawFrameDebugParams debug_params = {
+		.drawFlags = CVAR_TO_UINT32 (rt_debugflags),
+	};
+	// the Q2RTX-style core is the only RT renderer
+	debug_params.drawFlags |= RG_DEBUG_DRAW_Q2RTX_CORE_BIT;
+
+	float cameranear = GL_GetCameraNear (DEG2RAD (r_fovx), DEG2RAD (r_fovy));
+	float camerafar = GL_GetCameraFar ();
+
+	RgDrawFrameInfo info = {
+		.worldUpVector = {0, 0, 1},
+		.fovYRadians = DEG2RAD (r_fovy),
+		.cameraNear = cameranear,
+		.cameraFar = camerafar,
+		.rayLength = 10000.0f,
+		.rayCullMaskWorld = RG_DRAW_FRAME_RAY_CULL_WORLD_0_BIT | RG_DRAW_FRAME_RAY_CULL_WORLD_1_BIT | RG_DRAW_FRAME_RAY_CULL_SKY_BIT,
+		.disableRayTracedGeometry = false,
+		.disableRasterization = false,
+		.currentTime = (double)SDL_GetTicks () / 1000.0,
+		.disableEyeAdaptation = false,
+		.forceAntiFirefly = CVAR_TO_BOOL (rt_antifirefly),
+		.pRenderResolutionParams = &resolution_params,
+		.pIlluminationParams = &illum_params,
+		.pVolumetricParams = &volumetric_params,
+		.pBloomParams = &bloom_params,
+		.pReflectRefractParams = &refl_refr_params,
+		.pSkyParams = &sky_params,
+		.pTexturesParams = &texture_params,
+		.pLensFlareParams = &lens_flare_params,
+		.pLightmapParams = &lightmap_params,
+		.postEffectParams =
+			{
+				.pChromaticAberration = &chromatic_aberration_effect,
+				.pWaves = CVAR_TO_INT32 (r_waterwarp) == 1 ? &waves_effect : NULL,
+				.pColorTint = cl.intermission ? NULL : &tint_effect,
+				.pCRT = &crt_effect,
+				.pRadialBlur = cl.intermission ? NULL : &radial_effect,
+			},
+		.pDebugParams = &debug_params,
+	};
+	memcpy (info.view, vulkan_globals_rt.view_matrix, 16 * sizeof (float));
+
+	RgResult r = rgDrawFrame (vulkan_globals_rt.instance, &info);
+	RG_CHECK (r);
+}
+
 /*
 =================
 GL_BeginRenderingTask
@@ -3474,6 +4518,25 @@ qboolean GL_BeginRendering (qboolean use_tasks, task_handle_t *begin_rendering_t
 {
 	if (!use_tasks)
 		GL_SynchronizeEndRenderingTask ();
+
+	if (CVAR_TO_BOOL (rt_renderer))
+	{
+		if (vid.restart_next_frame)
+		{
+			VID_Restart (false);
+			vid.restart_next_frame = false;
+		}
+
+		*width = vid.width;
+		*height = vid.height;
+
+		if (use_tasks)
+			*begin_rendering_task = Task_AllocateAndAssignFunc (RT_GL_BeginRenderingTask, NULL, 0);
+		else
+			RT_GL_BeginRenderingTask (NULL);
+
+		return true;
+	}
 
 	const int		 requested_oit_value = (int)r_oit.value;
 	const oit_mode_t requested_oit_mode = GL_FrameOITModeForCvarValue (requested_oit_value);
@@ -4225,6 +5288,20 @@ GL_EndRendering
 */
 task_handle_t GL_EndRendering (qboolean use_tasks, qboolean swapchain)
 {
+	if (CVAR_TO_BOOL (rt_renderer))
+	{
+		rt_end_rendering_parms_t parms = {
+			.vid_width = (float)vid.width,
+			.vid_height = (float)vid.height,
+		};
+		task_handle_t end_rendering_task = INVALID_TASK_HANDLE;
+		if (use_tasks)
+			end_rendering_task = Task_AllocateAndAssignFunc ((task_func_t)RT_GL_EndRenderingTask, &parms, sizeof (parms));
+		else
+			RT_GL_EndRenderingTask (&parms);
+		return end_rendering_task;
+	}
+
 	end_rendering_parms_t parms = {
 		.swapchain = swapchain,
 		.use_oit = R_UseOIT (),
@@ -4287,6 +5364,8 @@ void GL_WaitForDeviceIdle (void)
 {
 	assert (!Tasks_IsWorker ());
 	GL_SynchronizeEndRenderingTask ();
+	if (CVAR_TO_BOOL (rt_renderer))
+		return; // the RT renderer synchronizes inside rgStartFrame/rgDrawFrame
 	if (!vulkan_globals.device_idle)
 	{
 		R_SubmitStagingBuffers ();
@@ -4369,6 +5448,23 @@ void VID_Shutdown (void)
 	if (vid_initialized)
 	{
 		assert (draw_context != NULL);
+
+		if (CVAR_TO_BOOL (rt_renderer) && vulkan_globals_rt.instance != RG_NULL_HANDLE)
+		{
+			RT_MAT_Shutdown ();
+			RgResult r = rgDestroyInstance (vulkan_globals_rt.instance);
+			RG_CHECK (r);
+			vulkan_globals_rt.instance = RG_NULL_HANDLE;
+
+			Mem_Free (vulkan_globals_rt.primary_cb_context.batch_indices);
+			Mem_Free (vulkan_globals_rt.primary_cb_context.batch_verts);
+			for (int i = 0; i < RT_CBX_NUM; i++)
+			{
+				Mem_Free (vulkan_globals_rt.secondary_cb_contexts[i].batch_indices);
+				Mem_Free (vulkan_globals_rt.secondary_cb_contexts[i].batch_verts);
+			}
+		}
+
 		VID_DestroyCursors ();
 		SDL_DestroyWindow (draw_context);
 		draw_context = NULL;
@@ -4610,6 +5706,15 @@ void VID_Init (void)
 	Cvar_SetCallback (&vid_desktopfullscreen, VID_Changed_f);
 	Cvar_SetCallback (&vid_borderless, VID_Changed_f);
 
+	// q2rtx: RT renderer cvars
+	{
+#define CVAR_DEF_T(name, default_value) Cvar_RegisterVariable (&name);
+		CVAR_DEF_LIST (CVAR_DEF_T)
+#undef CVAR_DEF_T
+	}
+
+	Cvar_SetCallback (&rt_sun_preset, RT_SunPreset_f);
+
 	Cmd_AddCommand ("vid_unlock", VID_Unlock);	   // johnfitz
 	Cmd_AddCommand ("vid_restart", VID_Restart_f); // johnfitz
 	Cmd_AddCommand ("vid_test", VID_Test);		   // johnfitz
@@ -4734,20 +5839,28 @@ void VID_Init (void)
 	PL_SetWindowIcon ();
 
 	Con_Printf ("\nVulkan Initialization\n");
-	SDL_Vulkan_LoadLibrary (NULL);
-	GL_InitInstance ();
-	GL_InitDevice ();
-	GL_InitCommandBuffers ();
-	vulkan_globals.staging_buffer_size = INITIAL_STAGING_BUFFER_SIZE_KB * 1024;
-	R_InitStagingBuffers ();
-	R_CreateDescriptorSetLayouts ();
-	R_CreateDescriptorPool ();
-	R_InitGPUBuffers ();
-	R_InitMeshHeap ();
-	TexMgr_InitHeap ();
-	R_InitSamplers ();
-	R_CreatePipelineLayouts ();
-	R_CreatePaletteOctreeBuffers (palette_octree_colors, NUM_PALETTE_OCTREE_COLORS, palette_octree_nodes, NUM_PALETTE_OCTREE_NODES);
+	if (CVAR_TO_BOOL (rt_renderer))
+	{
+		Con_Printf ("Using the RT renderer\n");
+		GL_InitInstance ();
+	}
+	else
+	{
+		SDL_Vulkan_LoadLibrary (NULL);
+		GL_InitInstance ();
+		GL_InitDevice ();
+		GL_InitCommandBuffers ();
+		vulkan_globals.staging_buffer_size = INITIAL_STAGING_BUFFER_SIZE_KB * 1024;
+		R_InitStagingBuffers ();
+		R_CreateDescriptorSetLayouts ();
+		R_CreateDescriptorPool ();
+		R_InitGPUBuffers ();
+		R_InitMeshHeap ();
+		TexMgr_InitHeap ();
+		R_InitSamplers ();
+		R_CreatePipelineLayouts ();
+		R_CreatePaletteOctreeBuffers (palette_octree_colors, NUM_PALETTE_OCTREE_COLORS, palette_octree_nodes, NUM_PALETTE_OCTREE_NODES);
+	}
 	// GL_CreateRenderResources ();
 
 	// johnfitz -- removed code creating "glquake" subdirectory
@@ -4794,7 +5907,8 @@ void VID_Restart (qboolean set_mode)
 	scr_initialized = false;
 
 	GL_WaitForDeviceIdle ();
-	GL_DestroyRenderResources ();
+	if (!CVAR_TO_BOOL (rt_renderer))
+		GL_DestroyRenderResources ();
 
 	//
 	// set new mode
@@ -4802,7 +5916,8 @@ void VID_Restart (qboolean set_mode)
 	if (set_mode)
 		VID_SetMode (width, height, refreshrate, fullscreen);
 
-	GL_CreateRenderResources ();
+	if (!CVAR_TO_BOOL (rt_renderer))
+		GL_CreateRenderResources ();
 
 	// conwidth and conheight need to be recalculated
 	vid.conwidth = (scr_conwidth.value > 0) ? (int)scr_conwidth.value : (scr_conscale.value > 0) ? (int)(vid.width / scr_conscale.value) : vid.width;
@@ -4826,7 +5941,8 @@ void VID_Restart (qboolean set_mode)
 			IN_HideCursor ();
 	}
 
-	R_InitSamplers ();
+	if (!CVAR_TO_BOOL (rt_renderer))
+		R_InitSamplers ();
 
 	SCR_UpdateRelativeScale ();
 

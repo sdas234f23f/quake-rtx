@@ -1,0 +1,99 @@
+@VERSION 1
+
+
+
+@POLY_LIGHT
+# <texture path> <color>
+maps/+0basebtn ff3333
+maps/+abasebtn ffe6b5
+maps/tlight01 918971
+maps/tlight03 b8d8ff
+maps/tlight05 c6c4ff
+maps/sfloor4_4 bdf1ff
+maps/ceil1_1 bdf1ff
+maps/light1_5 7a7667
+maps/light1_4 696f8c
+maps/light3_8 86818a
+
+
+
+#@WORLD_SPHERE_LIGHT
+# only for worldmodel brush;
+# ignored, if entity light (with properties like lightsyles) 
+# already exists around the polygon with such texture
+#maps/tlight02 bab193
+#maps/carch03
+#maps/window03
+
+
+@MIRROR
+maps/window01_1
+maps/window01_2
+maps/window01_3
+maps/window01_4
+maps/window02_1
+maps/window1_2
+maps/window1_3
+maps/window1_4
+maps/wizwin1_2
+maps/wizwin1_8
+
+
+
+@RASTER_LIGHT
+# <texture path> <color> <brightness = 1.0> <up offset = 0.0>
+# force alias model with such texture cast no shadows
+# and attach a sphere light to it
+progs/grenade/0         ffcdcd  10.0 8.0
+progs/missile/0         ffdfcd  18.0
+progs/k_spike/0         fff0d6
+progs/teleport/0        ebf3fa
+progs/lavaball/0        ff6b42  10.0
+progs/v_spike/0         ebf3fa
+progs/w_spike/0         c2f299
+# explosion (light with TE_EXPLOSION is ignored in RT source-port)
+progs/s_explod.spr/0    ffe6c4  8.0
+progs/s_explod.spr/1    fffbf5  18.0
+progs/s_explod.spr/2    ffe2b8  22.0
+progs/s_explod.spr/3    e0bc89  12.0
+progs/s_explod.spr/4    857e75  8.0
+progs/s_explod.spr/5    524e49  3.0
+# nailgun spikes have small radius
+progs/s_spike/0         333333
+progs/spike/0           333333
+
+# color is 000000, as we need force rasterization
+# without a light source (as they already have
+# lights in the original game)
+progs/laser/0           000000
+# but not "progs/flame/0" because it has a torch holder
+progs/flame2/0          000000
+# rasterize / no shadows
+progs/bolt/0            000000
+progs/bolt2/0           000000
+progs/bolt3/0           000000
+progs/s_bubble.spr/0    000000
+progs/s_bubble.spr/1    000000
+
+
+
+@EXACT_NORMALS
+# use low-poly style normals, as original ones are too crude
+# progs/v_axe/0
+progs/v_nail/0
+progs/v_nail2/0
+progs/v_shot/0
+progs/v_shot2/0
+progs/v_rock/0
+progs/v_rock2/0
+progs/v_light/0
+progs/m_g_key/0
+progs/m_s_key/0
+progs/b_g_key/0
+progs/b_s_key/0
+progs/w_g_key/0
+progs/w_s_key/0
+progs/end1/0
+progs/end2/0
+progs/end3/0
+progs/end4/0

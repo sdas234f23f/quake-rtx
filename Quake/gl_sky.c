@@ -29,7 +29,7 @@ float Fog_GetDensity (void);
 void  Fog_GetColor (float *c);
 
 extern atomic_uint32_t rs_skypolys; // for scr_speeds readout
-static float		   skyflatcolor[3];
+float				   skyflatcolor[3]; // q2rtx: read by the RT renderer frame path
 static float		   skymins[2][6], skymaxs[2][6];
 
 static gltexture_t *solidskytexture, *alphaskytexture;

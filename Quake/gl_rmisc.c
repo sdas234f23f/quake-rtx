@@ -523,6 +523,89 @@ float GL_WaterAlphaForTextureType (textype_t type)
 	}
 }
 
+// ============================================================================
+// q2rtx: RT renderer math helpers (ported from vkquake-rt gl_rmisc.c)
+// ============================================================================
+
+RgFloat3D RT_AnglesToDir (vec3_t angles)
+{
+	vec3_t f, r, u;
+	AngleVectors (angles, f, r, u);
+
+	RgFloat3D dir = RT_VEC3 (f);
+	return dir;
+}
+
+float RT_Luminance (const vec3_t color)
+{
+	return 0.2126f * color[0] + 0.7152f * color[1] + 0.0722f * color[2];
+}
+
+RgFloat3D RT_HexStringToColor (const char hex[6])
+{
+	const char red[] = {hex[0], hex[1], '\0'};
+	uint32_t   ir = strtoul (red, NULL, 16);
+
+	const char green[] = {hex[2], hex[3], '\0'};
+	uint32_t   ig = strtoul (green, NULL, 16);
+
+	const char blue[] = {hex[4], hex[5], '\0'};
+	uint32_t   ib = strtoul (blue, NULL, 16);
+
+	RgFloat3D c = {
+		(float)CLAMP (0, ir, 255) / 255.0f,
+		(float)CLAMP (0, ig, 255) / 255.0f,
+		(float)CLAMP (0, ib, 255) / 255.0f,
+	};
+	return c;
+}
+
+void RT_ColorToHexString (const vec3_t color, char out_hex[7])
+{
+	static const char inttohex[] = "0123456789abcdef";
+
+	for (int i = 0; i < 3; i++)
+	{
+		int c = CLAMP (0, (int)(color[i] * 255.0f), 255);
+
+		int l = (c >> 0) & 0xF;
+		int h = (c >> 4) & 0xF;
+
+		out_hex[i * 2 + 0] = inttohex[h];
+		out_hex[i * 2 + 1] = inttohex[l];
+	}
+
+	out_hex[6] = '\0';
+}
+
+float VectorLengthSquared (const vec3_t a, const vec3_t b)
+{
+	vec3_t e;
+	VectorSubtract (a, b, e);
+
+	return DotProduct (e, e);
+}
+
+#define MODEL_MAT(i, j) (model_matrix[(i)*4 + (j)])
+
+RgTransform RT_GetModelTransform (const float model_matrix[16])
+{
+	// right side should be 0, and translation values on bottom
+	assert (
+		fabsf (MODEL_MAT (0, 3)) < 0.001f &&
+		fabsf (MODEL_MAT (1, 3)) < 0.001f &&
+		fabsf (MODEL_MAT (2, 3)) < 0.001f);
+
+	RgTransform t = {
+		MODEL_MAT (0, 0), MODEL_MAT (1, 0), MODEL_MAT (2, 0), MODEL_MAT (3, 0),
+		MODEL_MAT (0, 1), MODEL_MAT (1, 1), MODEL_MAT (2, 1), MODEL_MAT (3, 1), MODEL_MAT (0, 2), MODEL_MAT (1, 2), MODEL_MAT (2, 2), MODEL_MAT (3, 2),
+	};
+
+	return t;
+}
+
+#undef MODEL_MAT
+
 /*
 ===============
 R_CreateStagingBuffers

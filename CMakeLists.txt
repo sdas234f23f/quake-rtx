@@ -519,7 +519,12 @@ target_compile_definitions(vkquake PRIVATE
 )
 
 if(VKQUAKE_PLATFORM_WINDOWS)
-    target_compile_definitions(vkquake PRIVATE WIN32 _WINDOWS)
+    # RG_USE_SURFACE_WIN32: vkpt.h then exposes RgWin32SurfaceCreateInfo so the
+    # host can pass the SDL window's HWND/HINSTANCE to the RT renderer.
+    # NOMINMAX: vkpt.h includes windows.h (host TUs must not get min/max macros).
+    # WIN32_LEAN_AND_MEAN: vkpt.h pulls windows.h into every host TU; without it
+    # windows.h would include winsock.h and clash with net_*.c's winsock2.h.
+    target_compile_definitions(vkquake PRIVATE WIN32 _WINDOWS RG_USE_SURFACE_WIN32 NOMINMAX WIN32_LEAN_AND_MEAN)
 elseif(VKQUAKE_PLATFORM_LINUX)
     target_compile_definitions(vkquake PRIVATE LINUX)
 endif()

@@ -75,6 +75,10 @@ extern int in_forward, in_forward2, in_back;
 vec3_t v_punchangles[2];	   // johnfitz -- copied from cl.punchangle.  0 is current, 1 is previous value. never the same unless map just loaded
 double v_punchangles_times[2]; // spike -- times, to avoid assumptions...
 
+// q2rtx: damage tint value and flag (RT renderer post-processing)
+float    rt_dmg_value;
+qboolean rt_dmg_inthisframe;
+
 extern qboolean needs_relink;
 
 /*

@@ -63,6 +63,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define Q_UNUSED(x) (x = x) // for pesky compiler / lint warnings
 
+// q2rtx: RT renderer override folder (shaders, blue noise, material overrides)
+#define RT_OVERRIDEN_FOLDER "ovrd/"
+
 #define MAX_NUM_ARGVS 50
 
 // up / down
