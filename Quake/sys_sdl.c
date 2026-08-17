@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "sys.h"
+#include "rt_pkz.h"
 
 #include <errno.h>
 
@@ -210,11 +211,19 @@ int Sys_FileOpenWrite (const char *path)
 
 qfileofs_t Sys_FilePos (int handle)
 {
+	if (RT_PKZ_IsHandle (handle))
+		return RT_PKZ_GetPos (handle);
 	return sys_handles[handle].pos;
 }
 
 void Sys_FileClose (int handle)
 {
+	if (RT_PKZ_IsHandle (handle))
+	{
+		RT_PKZ_Close (handle);
+		return;
+	}
+
 	if (sys_handles[handle].file)
 	{
 		fclose (sys_handles[handle].file);
@@ -226,6 +235,12 @@ void Sys_FileClose (int handle)
 
 int Sys_FileSeek (int handle, qfileofs_t position)
 {
+	if (RT_PKZ_IsHandle (handle))
+	{
+		RT_PKZ_Seek (handle, (int)position);
+		return 0;
+	}
+
 	// like fseek(), going beyond the actual file
 	// without error is expected. Attempting to read afterwards however will trigger
 	// an EOF condition.
@@ -246,11 +261,16 @@ int Sys_FileSeek (int handle, qfileofs_t position)
 
 bool Sys_feof (int handle)
 {
+	if (RT_PKZ_IsHandle (handle))
+		return RT_PKZ_AtEOF (handle);
 	return sys_handles[handle].eof_condition;
 }
 
 int Sys_FileRead (int handle, void *dest, int count)
 {
+	if (RT_PKZ_IsHandle (handle))
+		return RT_PKZ_Read (handle, dest, count);
+
 	if (count <= 0)
 		return 0;
 

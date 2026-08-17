@@ -153,6 +153,7 @@ qboolean           request_shaders_reload = false;
 	CVAR_DEF_T (rt_elight_default_mdl, "1000") \
 	CVAR_DEF_T (rt_elight_threshold, "-1") \
     CVAR_DEF_T (rt_elight_radius, "0.01") \
+    CVAR_DEF_T (rt_elight_influence_radius, "400") \
 	\
 	CVAR_DEF_T (rt_poi_distthresh, "2") \
 	CVAR_DEF_T (rt_poi_distthresh_super, "3") \
@@ -809,6 +810,12 @@ VID_FilterChanged_f
 */
 static void VID_FilterChanged_f (cvar_t *var)
 {
+	// q2rtx: in RT mode the native device is not created (GL_InitDevice is
+	// skipped), so R_InitSamplers() would call vkCreateSampler with a null
+	// device. The RT filter is applied live via RgDrawFrameInfo.dynamicSamplerFilter.
+	if (CVAR_TO_BOOL (rt_renderer))
+		return;
+
 	R_InitSamplers ();
 }
 

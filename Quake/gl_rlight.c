@@ -41,6 +41,7 @@ typedef struct rt_cluster_light_s
 {
 	uint64_t uniqueID;
 	vec3_t   origin;
+	float    influenceRadius; // <= 0: no radius limit (PVS-only)
 } rt_cluster_light_t;
 
 static rt_cluster_light_t rt_cluster_lights[RT_CLUSTER_MAX_LIGHTS];
@@ -51,7 +52,7 @@ void RT_ClusterLightListsReset (void)
 	rt_cluster_light_count = 0;
 }
 
-void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin)
+void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin, float influenceRadius)
 {
 	if (rt_cluster_light_count >= RT_CLUSTER_MAX_LIGHTS)
 		return;
@@ -65,6 +66,7 @@ void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin)
 
 	rt_cluster_lights[rt_cluster_light_count].uniqueID = uniqueID;
 	VectorCopy (origin, rt_cluster_lights[rt_cluster_light_count].origin);
+	rt_cluster_lights[rt_cluster_light_count].influenceRadius = influenceRadius;
 	rt_cluster_light_count++;
 }
 
@@ -93,13 +95,19 @@ void RT_ClusterLightListsUpload (void)
 		allocClusters = numClusters;
 	}
 
-	// Pass 1: count how many lights each cluster sees (via the PVS).
+	// Pass 1: count how many lights each cluster sees (via the PVS, optionally
+	// restricted to the light's influence radius like the native renderer and
+	// Q2RTX do - otherwise a bright flickering torch is sampled by every
+	// cluster in its PVS and its flicker bleeds across large map areas).
 	memset (counts, 0, sizeof (int) * numClusters);
 	for (int li = 0; li < rt_cluster_light_count; li++)
 	{
 		mleaf_t *leaf = Mod_PointInLeaf (rt_cluster_lights[li].origin, wm);
 		if (!leaf)
 			continue;
+
+		const float infl = rt_cluster_lights[li].influenceRadius;
+		const qboolean radius_limited = infl > 0.0f;
 
 		const byte *vis = Mod_LeafPVS (leaf, wm);
 		for (int j = 0; j < (numClusters + 7) / 8; j++)
@@ -115,6 +123,24 @@ void RT_ClusterLightListsUpload (void)
 				const int c = (j << 3) + k + 1;
 				if (c >= numClusters)
 					continue;
+				if (radius_limited)
+				{
+					// distance from the light origin to the cluster's AABB
+					const mleaf_t *cleaf = &wm->leafs[c];
+					float d2 = 0.0f;
+					for (int a = 0; a < 3; a++)
+					{
+						const float p = rt_cluster_lights[li].origin[a];
+						const float lo = cleaf->minmaxs[a];
+						const float hi = cleaf->minmaxs[3 + a];
+						if (p < lo)
+							d2 += (lo - p) * (lo - p);
+						else if (p > hi)
+							d2 += (p - hi) * (p - hi);
+					}
+					if (d2 > infl * infl)
+						continue;
+				}
 				if (counts[c] < RT_CLUSTER_MAX_PER_LIST)
 					counts[c]++;
 			}
@@ -138,6 +164,9 @@ void RT_ClusterLightListsUpload (void)
 		if (!leaf)
 			continue;
 
+		const float infl = rt_cluster_lights[li].influenceRadius;
+		const qboolean radius_limited = infl > 0.0f;
+
 		const byte *vis = Mod_LeafPVS (leaf, wm);
 		for (int j = 0; j < (numClusters + 7) / 8; j++)
 		{
@@ -150,6 +179,23 @@ void RT_ClusterLightListsUpload (void)
 				const int c = (j << 3) + k + 1;
 				if (c >= numClusters)
 					continue;
+				if (radius_limited)
+				{
+					const mleaf_t *cleaf = &wm->leafs[c];
+					float d2 = 0.0f;
+					for (int a = 0; a < 3; a++)
+					{
+						const float p = rt_cluster_lights[li].origin[a];
+						const float lo = cleaf->minmaxs[a];
+						const float hi = cleaf->minmaxs[3 + a];
+						if (p < lo)
+							d2 += (lo - p) * (lo - p);
+						else if (p > hi)
+							d2 += (p - hi) * (p - hi);
+					}
+					if (d2 > infl * infl)
+						continue;
+				}
 				if (fill[c] < counts[c])
 					lights[offsets[c] + (uint32_t)fill[c]++] = rt_cluster_lights[li].uniqueID;
 			}
@@ -170,7 +216,7 @@ void RT_ClusterLightListsUpload (void)
 // q2rtx: parsing + uploading of static entity lights ("elights")
 // ============================================================================
 
-extern cvar_t rt_elight_normaliz, rt_elight_default, rt_elight_default_mdl, rt_elight_radius, rt_elight_threshold;
+extern cvar_t rt_elight_normaliz, rt_elight_default, rt_elight_default_mdl, rt_elight_radius, rt_elight_threshold, rt_elight_influence_radius;
 extern cvar_t rt_poi_trigger, rt_poi_func, rt_poi_weapon, rt_poi_pwrup, rt_poi_armor, rt_poi_key, rt_poi_health, rt_poi_ammo;
 extern cvar_t rt_poi_distthresh, rt_poi_distthresh_super;
 
@@ -632,7 +678,18 @@ void RT_UploadAllElights ()
 			RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &info);
 			RG_CHECK (r);
 
-			RT_ClusterLightAdd (info.uniqueID, info.position.data);
+			// Flickering (lightstyle) lights are registered only in the clusters
+			// within their native-style influence radius. Otherwise a bright
+			// flickering torch is sampled by every cluster in its PVS and the
+			// flicker visibly bleeds across large map areas. Static lights keep
+			// the PVS-only registration (no artificial range cutoff).
+			float influence = -1.0f;
+			if (src->state & STRUCT_STATE_FOUND_LIGHTSTYLE)
+			{
+				influence = q_min (quake_intensity, CVAR_TO_FLOAT (rt_elight_influence_radius));
+			}
+
+			RT_ClusterLightAdd (info.uniqueID, info.position.data, influence);
 		}
 	}
 }

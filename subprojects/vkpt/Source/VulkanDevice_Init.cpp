@@ -312,6 +312,7 @@ VulkanDevice::~VulkanDevice()
     amdFsr.reset();
     nvDlss.reset();
     sharpening.reset();
+    q2Denoiser.reset();
     effectWipe.reset();
     effectRadialBlur.reset();
     effectChromaticAberration.reset();

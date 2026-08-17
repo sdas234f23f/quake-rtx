@@ -5586,6 +5586,26 @@ static void ReallocateVertexBuffer ()
 {
 	VkResult err;
 
+	// q2rtx: the RT renderer doesn't draw FTE particles; keep the CPU-side
+	// buffers valid without creating native Vulkan buffers.
+	if (CVAR_TO_BOOL (rt_renderer))
+	{
+		basicvertex_t *old = cl_curstrisvert;
+		const int      oldmax = cl_maxstrisvert[current_buffer_index];
+
+		cl_maxstrisvert[current_buffer_index] = q_max (cl_maxstrisvert[current_buffer_index] * 2, INITIAL_NUM_VERTICES);
+		const size_t new_size = cl_maxstrisvert[current_buffer_index] * sizeof (basicvertex_t);
+
+		basicvertex_t *newp = (basicvertex_t *)Mem_Alloc (new_size);
+		if (old)
+			memcpy (newp, old, oldmax * sizeof (basicvertex_t));
+		Mem_Free (old);
+
+		cl_curstrisvert = newp;
+		cl_strisvert[current_buffer_index] = newp;
+		return;
+	}
+
 	if (vertex_buffers[current_buffer_index] != VK_NULL_HANDLE)
 		vkDestroyBuffer (vulkan_globals.device, vertex_buffers[current_buffer_index], NULL);
 
@@ -5643,6 +5663,26 @@ static void ReallocateVertexBuffer ()
 static void ReallocateIndexBuffer ()
 {
 	VkResult err;
+
+	// q2rtx: the RT renderer doesn't draw FTE particles; keep the CPU-side
+	// buffers valid without creating native Vulkan buffers.
+	if (CVAR_TO_BOOL (rt_renderer))
+	{
+		unsigned short *old = cl_curstrisidx;
+		const int       oldmax = cl_maxstrisidx[current_buffer_index];
+
+		cl_maxstrisidx[current_buffer_index] = q_max (cl_maxstrisidx[current_buffer_index] * 2, INITIAL_NUM_INDICES);
+		const size_t new_size = cl_maxstrisidx[current_buffer_index] * sizeof (unsigned short);
+
+		unsigned short *newp = (unsigned short *)Mem_Alloc (new_size);
+		if (old)
+			memcpy (newp, old, oldmax * sizeof (unsigned short));
+		Mem_Free (old);
+
+		cl_curstrisidx = newp;
+		cl_strisidx[current_buffer_index] = newp;
+		return;
+	}
 
 	if (index_buffers[current_buffer_index] != VK_NULL_HANDLE)
 		vkDestroyBuffer (vulkan_globals.device, index_buffers[current_buffer_index], NULL);

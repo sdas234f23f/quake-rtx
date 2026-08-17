@@ -425,6 +425,26 @@ static rt_pkz_stream_t *rt_pkz_get_stream(int handle)
     return s->inUse ? s : NULL;
 }
 
+qfileofs_t RT_PKZ_GetPos(int handle)
+{
+    rt_pkz_stream_t *s = rt_pkz_get_stream(handle);
+    if (!s)
+    {
+        return 0;
+    }
+    return (qfileofs_t)s->pos;
+}
+
+qboolean RT_PKZ_AtEOF(int handle)
+{
+    rt_pkz_stream_t *s = rt_pkz_get_stream(handle);
+    if (!s)
+    {
+        return true;
+    }
+    return s->pos >= s->size;
+}
+
 int RT_PKZ_Read(int handle, void *dest, int count)
 {
     rt_pkz_stream_t *s = rt_pkz_get_stream(handle);

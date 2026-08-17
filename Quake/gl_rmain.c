@@ -476,8 +476,9 @@ static void RT_UploadAllDlights (void)
 		RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &info);
 		RG_CHECK (r);
 
-		// register for the per-cluster light lists
-		RT_ClusterLightAdd (info.uniqueID, l->origin);
+		// register for the per-cluster light lists; the native dlight radius
+		// is the influence radius (keeps muzzle flashes/explosions local)
+		RT_ClusterLightAdd (info.uniqueID, l->origin, l->radius);
 	}
 
 	if (CVAR_TO_FLOAT (rt_flashlight) > 0.1f)
@@ -1023,7 +1024,8 @@ static void RT_R_RenderView (qboolean use_tasks, task_handle_t begin_rendering_t
 		RT_R_DrawWorldTask (0, NULL);
 		RT_R_DrawSkyAndWaterTask (NULL);
 		RT_R_DrawViewModelTask (NULL);
-		RT_R_DrawEntitiesTask (0, NULL);
+		for (int i = 0; i < NUM_ENTITIES_CBX; ++i)
+			RT_R_DrawEntitiesTask (i, NULL);
 		RT_R_DrawAlphaEntitiesTask (NULL);
 		RT_R_DrawParticlesTask (NULL);
 	}
@@ -2199,6 +2201,10 @@ void R_RenderView (
 	// q2rtx: RT renderer path
 	if (CVAR_TO_BOOL (rt_renderer))
 	{
+		// the native indirect-draw machinery is not used by the RT renderer;
+		// keep `indirect` false so surface marking skips R_MarkDeps (which
+		// writes native-only dependency buffers).
+		indirect = false;
 		RT_R_RenderView (use_tasks, begin_rendering_task, setup_frame_task, draw_done_task);
 		return;
 	}

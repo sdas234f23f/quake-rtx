@@ -23,6 +23,7 @@
 #include "Common.h"
 #include "Containers.h"
 #include "PhysicalDevice.h"
+
 #include "Vma/vk_mem_alloc.h"
 
 namespace vkpt

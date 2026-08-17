@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // r_misc.c
 
 #include "quakedef.h"
+
 #include "gl_heap.h"
 #include <float.h>
 
@@ -2298,6 +2299,13 @@ R_InitSamplers
 */
 void R_InitSamplers ()
 {
+	// q2rtx: in RT mode the native device is not created (GL_InitDevice is
+	// skipped), so creating samplers here would call vkCreateSampler with a
+	// null device and crash. The RT texture filter is applied live per frame
+	// via RgDrawFrameInfo.dynamicSamplerFilter instead.
+	if (CVAR_TO_BOOL (rt_renderer))
+		return;
+
 	GL_WaitForDeviceIdle ();
 	Sys_Printf ("Initializing samplers\n");
 
@@ -4510,7 +4518,9 @@ void R_Init (void)
 	Sky_Init (); // johnfitz
 	Fog_Init (); // johnfitz
 
-	R_AllocateLightmapComputeBuffers ();
+	// q2rtx: GPU lightmap update buffers are native-renderer-only
+	if (!CVAR_TO_BOOL (rt_renderer))
+		R_AllocateLightmapComputeBuffers ();
 
 	staging_mutex = SDL_CreateMutex ();
 }
@@ -4726,13 +4736,17 @@ void R_NewMap (void)
 #endif
 	GL_DeleteBModelVertexBuffer ();
 
+	// q2rtx: GL_BuildLightmaps has an internal RT branch (CPU lightmaps +
+	// surface polys, no native GPU uploads).
 	GL_BuildLightmaps ();
 	GL_BuildBModelVertexBuffer ();
+	// CPU-only (surfvis + SIMD marking structures); needed by R_MarkSurfaces
+	// in both renderers.
+	GL_PrepareSIMDAndParallelData ();
 
 	if (!CVAR_TO_BOOL (rt_renderer))
 	{
 		GL_BuildBModelAccelerationStructures ();
-		GL_PrepareSIMDAndParallelData ();
 		GL_SetupIndirectDraws ();
 		GL_SetupLightmapCompute ();
 		GL_UpdateLightmapDescriptorSets ();

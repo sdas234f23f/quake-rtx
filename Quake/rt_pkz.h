@@ -55,5 +55,7 @@ qboolean RT_PKZ_IsHandle(int handle);
 int RT_PKZ_Read(int handle, void *dest, int count);
 void RT_PKZ_Seek(int handle, int position);
 void RT_PKZ_Close(int handle);
+qfileofs_t RT_PKZ_GetPos(int handle);
+qboolean RT_PKZ_AtEOF(int handle);
 
 #endif // RT_PKZ_H

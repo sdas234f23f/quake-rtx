@@ -54,6 +54,11 @@ extern cvar_t r_showtris;
 
 static VkBuffer particle_index_buffer;
 
+// q2rtx: RT quad-particle indices. A static buffer, allocated once in
+// R_InitParticles (like vkquake-rt) - allocating it from the shared RT scratch
+// buffer would overlap the vertex data and corrupt every particle.
+static uint32_t *rt_quadindices;
+
 /*
 ===============
 R_ParticleTextureLookup -- johnfitz -- generate nice antialiased 32x32 circle for particles
@@ -161,6 +166,10 @@ R_InitParticleIndexBuffer
 */
 void R_InitParticleIndexBuffer (void)
 {
+	// q2rtx: the RT renderer uploads particle quads via scratch-memory fans
+	if (CVAR_TO_BOOL (rt_renderer))
+		return;
+
 	uint32_t particle_index_buffer_size = r_numparticles * sizeof (uint16_t) * 6; // 6 indices per particle quad
 
 	VkResult err;
@@ -253,6 +262,18 @@ void R_InitParticles (void)
 
 	R_InitParticleTextures (); // johnfitz
 	R_InitParticleIndexBuffer ();
+
+	// q2rtx: pre-build the RT quad-particle index buffer (one quad per particle).
+	rt_quadindices = (uint32_t *)Mem_Alloc (r_numparticles * 6 * sizeof (uint32_t));
+	for (i = 0; i < r_numparticles; i++)
+	{
+		rt_quadindices[i * 6 + 0] = i * 4 + 0;
+		rt_quadindices[i * 6 + 1] = i * 4 + 1;
+		rt_quadindices[i * 6 + 2] = i * 4 + 2;
+		rt_quadindices[i * 6 + 3] = i * 4 + 0;
+		rt_quadindices[i * 6 + 4] = i * 4 + 2;
+		rt_quadindices[i * 6 + 5] = i * 4 + 3;
+	}
 }
 
 /*
@@ -1072,20 +1093,9 @@ static void RT_DrawParticlesFaces (rt_cb_context_t *cbx)
 	else
 		vertices = RT_AllocScratchMemoryNulled (num_particles * 3 * sizeof (RgVertex));
 
-	uint32_t *quadindices = NULL;
-	if (r_quadparticles.value)
-	{
-		quadindices = RT_AllocScratchMemory (num_particles * 6 * sizeof (uint32_t));
-		for (int i = 0; i < num_particles; i++)
-		{
-			quadindices[i * 6 + 0] = i * 4 + 0;
-			quadindices[i * 6 + 1] = i * 4 + 1;
-			quadindices[i * 6 + 2] = i * 4 + 2;
-			quadindices[i * 6 + 3] = i * 4 + 0;
-			quadindices[i * 6 + 4] = i * 4 + 2;
-			quadindices[i * 6 + 5] = i * 4 + 3;
-		}
-	}
+	// q2rtx: pre-built static index buffer (see R_InitParticles); never allocate
+	// it from the shared scratch memory - it would overlap `vertices`.
+	uint32_t *quadindices = r_quadparticles.value ? rt_quadindices : NULL;
 
 	int current_vertex = 0;
 	for (p = active_particles; p; p = p->next)
@@ -1096,6 +1106,8 @@ static void RT_DrawParticlesFaces (rt_cb_context_t *cbx)
 			scale = 1 + 0.08; // johnfitz -- added .08 to be consistent
 		else
 			scale = 1 + scale * 0.004;
+
+		scale *= texturescalefactor; // johnfitz -- compensate for apparent size of different particle textures
 
 		byte *c = (byte *)&d_8to24table[(int)p->color];
 

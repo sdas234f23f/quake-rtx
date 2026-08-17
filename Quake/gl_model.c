@@ -1113,7 +1113,7 @@ static void Mod_LoadTextureTask (int i, qmodel_t **ppmod)
 			if (fbright)
 			{
 				tx->gltexture = TexMgr_LoadImage (rtname, mod, texturename, tx->width, tx->height, fmt, (byte *)(tx + 1), tx->source_file, tx->source_offset,
-					TEXPREF_MIPMAP | TEXPREF_NOBRIGHT | extraflags);
+					TEXPREF_MIPMAP | (CVAR_TO_BOOL (rt_renderer) ? 0 : TEXPREF_NOBRIGHT) | extraflags);
 				q_snprintf (texturename, sizeof (texturename), "%s:%s_glow", mod->name, tx->name);
 				tx->fullbright = TexMgr_LoadImage (NULL,  mod, texturename, tx->width, tx->height, fmt, (byte *)(tx + 1), tx->source_file, tx->source_offset,
 					(CVAR_TO_BOOL (rt_renderer) ? TEXPREF_RT_IS_EMISSIVE : 0) | TEXPREF_MIPMAP | TEXPREF_FULLBRIGHT | extraflags);
@@ -3748,12 +3748,20 @@ static void Mod_LoadSkinTask (int i, load_skin_task_args_t *args)
 			offset = (src_offset_t)(skin) - (src_offset_t)mod_base;
 			if (Mod_CheckFullbrights (skin, size))
 			{
+				// q2rtx: wrap in the RT special block so the fullbright skin is
+				// combined with the albedo into an RME emissive material.
+				if (CVAR_TO_BOOL (rt_renderer))
+					TexMgr_RT_SpecialStart (CVAR_TO_FLOAT (rt_model_rough), CVAR_TO_FLOAT (rt_model_metal));
+
 				pheader->gltextures[i][0] = TexMgr_LoadImage (NULL, 
-					mod, name, pheader->skinwidth, pheader->skinheight, SRC_INDEXED, skin, mod->name, offset, texflags | TEXPREF_MIPMAP | TEXPREF_NOBRIGHT);
+					mod, name, pheader->skinwidth, pheader->skinheight, SRC_INDEXED, skin, mod->name, offset, texflags | TEXPREF_MIPMAP | (CVAR_TO_BOOL (rt_renderer) ? 0 : TEXPREF_NOBRIGHT));
 				q_snprintf (fbr_mask_name, sizeof (fbr_mask_name), "%s:frame%i_glow", mod->name, i);
 				pheader->fbtextures[i][0] = TexMgr_LoadImage (NULL, 
 					mod, fbr_mask_name, pheader->skinwidth, pheader->skinheight, SRC_INDEXED, skin, mod->name, offset,
-					texflags | TEXPREF_MIPMAP | TEXPREF_FULLBRIGHT);
+					(CVAR_TO_BOOL (rt_renderer) ? TEXPREF_RT_IS_EMISSIVE : 0) | texflags | TEXPREF_MIPMAP | TEXPREF_FULLBRIGHT);
+
+				if (CVAR_TO_BOOL (rt_renderer))
+					TexMgr_RT_SpecialEnd ();
 			}
 			else
 			{
@@ -3790,12 +3798,20 @@ static void Mod_LoadSkinTask (int i, load_skin_task_args_t *args)
 			offset = (src_offset_t)(skin) - (src_offset_t)mod_base; // johnfitz
 			if (Mod_CheckFullbrights (skin, size))
 			{
+				// q2rtx: wrap in the RT special block so the fullbright skin is
+				// combined with the albedo into an RME emissive material.
+				if (CVAR_TO_BOOL (rt_renderer))
+					TexMgr_RT_SpecialStart (CVAR_TO_FLOAT (rt_model_rough), CVAR_TO_FLOAT (rt_model_metal));
+
 				pheader->gltextures[i][j & 3] = TexMgr_LoadImage (NULL, 
-					mod, name, pheader->skinwidth, pheader->skinheight, SRC_INDEXED, skin, mod->name, offset, texflags | TEXPREF_MIPMAP | TEXPREF_NOBRIGHT);
+					mod, name, pheader->skinwidth, pheader->skinheight, SRC_INDEXED, skin, mod->name, offset, texflags | TEXPREF_MIPMAP | (CVAR_TO_BOOL (rt_renderer) ? 0 : TEXPREF_NOBRIGHT));
 				q_snprintf (fbr_mask_name, sizeof (fbr_mask_name), "%s:frame%i_%i_glow", mod->name, i, j);
 				pheader->fbtextures[i][j & 3] = TexMgr_LoadImage (NULL, 
 					mod, fbr_mask_name, pheader->skinwidth, pheader->skinheight, SRC_INDEXED, skin, mod->name, offset,
-					texflags | TEXPREF_MIPMAP | TEXPREF_FULLBRIGHT);
+					(CVAR_TO_BOOL (rt_renderer) ? TEXPREF_RT_IS_EMISSIVE : 0) | texflags | TEXPREF_MIPMAP | TEXPREF_FULLBRIGHT);
+
+				if (CVAR_TO_BOOL (rt_renderer))
+					TexMgr_RT_SpecialEnd ();
 			}
 			else
 			{

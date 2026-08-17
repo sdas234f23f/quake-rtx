@@ -966,7 +966,7 @@ void RT_UploadAllElights (void);
 
 // Q2RTX per-BSP-cluster light lists (built from the PVS on the CPU).
 void RT_ClusterLightListsReset (void);
-void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin);
+void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin, float influenceRadius);
 void RT_ClusterLightListsUpload (void);
 
 void RT_CustomLights_Parse (void);

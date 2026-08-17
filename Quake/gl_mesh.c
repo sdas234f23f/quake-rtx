@@ -408,6 +408,12 @@ void GLMesh_UploadBuffers (
 		}
 	}
 
+	// q2rtx: the RT renderer keeps its geometry in CPU-side arrays (sampled
+	// directly by the ray tracer); no native Vulkan buffers here. Models that
+	// don't produce rtvertices (MD5/MD3) are simply not drawn by the RT path.
+	if (CVAR_TO_BOOL (rt_renderer))
+		return;
+
 	// count how much space we're going to need.
 	int totalvbosize = 0;
 

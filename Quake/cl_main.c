@@ -921,7 +921,9 @@ void CL_RelinkEntities (void)
 		}
 #endif
 
-		if (i == cl.viewentity && !chase_active.value)
+		// q2rtx: in RT mode the player body is drawn (FIRST_PERSON_VIEWER
+		// visibility) so it shows up in reflections/portals, like vkquake-rt.
+		if (i == cl.viewentity && !chase_active.value && !CVAR_TO_BOOL (rt_renderer))
 			continue;
 
 		if (cl_numvisedicts < cl_maxvisedicts)

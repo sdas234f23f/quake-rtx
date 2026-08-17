@@ -527,9 +527,31 @@ static int RT_GetSurfaceCluster (const qmodel_t *m, const msurface_t *s)
 	if (m == cl.worldmodel && rt_surfcluster)
 	{
 		const int si = (int)(s - m->surfaces);
-		if (si >= 0 && si < m->numsurfaces)
+
+		// Submodel (brush-entity) surfaces live in the world surface array but
+		// are drawn as dynamic entities. Their exact-leaf cluster (from the
+		// marksurface pass below) usually resolves to the SOLID leaf inside the
+		// brush, whose light list is empty -> unlit doors/lifts. Fall through to
+		// the visible-leaf lookup for them.
+		const int submodel_first =
+			(cl.worldmodel->numsubmodels > 1) ? cl.worldmodel->submodels[1].firstface : cl.worldmodel->numsurfaces;
+		if (si >= 0 && si < m->numsurfaces && si < submodel_first)
 			return rt_surfcluster[si];
 	}
+
+	// Submodel (brush-entity) surfaces are stored in world space, but their
+	// centroid lies ON the face plane and Mod_PointInLeaf() on it returns the
+	// leaf INSIDE the solid brush (empty light list -> unlit doors/buttons).
+	// Q2RTX offsets the point along the triangle normal so it lands in the
+	// visible leaf; do the same here, with a larger retry offset.
+	vec3_t normal;
+	if (s->flags & SURF_PLANEBACK)
+	{
+		VectorCopy (s->plane->normal, normal);
+		VectorInverse (normal);
+	}
+	else
+		VectorCopy (s->plane->normal, normal);
 
 	vec3_t centroid = { 0, 0, 0 };
 	for (int v = 0; v < s->numedges; v++)
@@ -546,9 +568,18 @@ static int RT_GetSurfaceCluster (const qmodel_t *m, const msurface_t *s)
 		centroid[2] /= s->numedges;
 	}
 
-	mleaf_t *leaf = Mod_PointInLeaf (centroid, cl.worldmodel);
-	if (leaf)
-		return (int)(leaf - cl.worldmodel->leafs);
+	for (int attempt = 0; attempt < 2; attempt++)
+	{
+		const float off = (attempt == 0) ? 0.01f : 1.0f;
+
+		vec3_t point;
+		VectorMA (centroid, off, normal, point);
+
+		mleaf_t *leaf = Mod_PointInLeaf (point, cl.worldmodel);
+		if (leaf && leaf->contents != CONTENTS_SOLID)
+			return (int)(leaf - cl.worldmodel->leafs);
+	}
+
 	return 0;
 }
 
@@ -580,15 +611,20 @@ static void RT_BuildSurfaceClusterMap (void)
 	for (int i = 0; i < wm->numsurfaces; i++)
 		rt_surfcluster[i] = RT_GetSurfaceCluster (wm, &wm->surfaces[i]);
 
-	// Exact assignment: every leaf marks its own surfaces.
+	// Exact assignment: every leaf marks its own surfaces. Submodel surfaces
+	// (>= submodels[1].firstface) keep the visible-leaf value computed above,
+	// because the exact assignment for them is the SOLID leaf (empty light list).
+	const int submodel_first =
+		(wm->numsubmodels > 1) ? wm->submodels[1].firstface : wm->numsurfaces;
 	for (int l = 0; l < wm->numleafs; l++)
 	{
 		const mleaf_t *leaf = &wm->leafs[l];
 		for (int j = 0; j < leaf->nummarksurfaces; j++)
 		{
 			const int si = leaf->firstmarksurface[j];
-			if (si >= 0 && si < wm->numsurfaces)
-				rt_surfcluster[si] = l;
+			if (si >= submodel_first || si < 0 || si >= wm->numsurfaces)
+				continue;
+			rt_surfcluster[si] = l;
 		}
 	}
 }
@@ -2147,6 +2183,79 @@ void GL_BuildLightmaps (void)
 
 	r_framecount = 1; // no dlightcache
 
+	// q2rtx: build classic lightmaps + surface display lists on the CPU only.
+	// The surface polys are required by the RT world uploader, and the
+	// lightmap textures go through the RT-aware texture manager (they are
+	// used when rt_classic_render is enabled). All native GPU work (staging
+	// buffers, descriptor sets, surface data) is skipped.
+	if (CVAR_TO_BOOL (rt_renderer))
+	{
+		for (i = 0; i < lightmap_count; i++)
+			Mem_Free (lightmaps[i].data);
+
+		Mem_Free (lightmaps);
+		lightmaps = NULL;
+		last_lightmap_allocated = 0;
+		lightmap_count = 0;
+		memset (columns, -1, sizeof (columns));
+		memset (lightmap_idx, 0, sizeof (lightmap_idx));
+		memset (shelf_idx, 0, sizeof (shelf_idx));
+
+		// allocates the lightmap blocks + surface->lightmaptexturenum
+		num_surfaces = 0;
+		for (i = 1; i < MAX_MODELS; i++)
+		{
+			qmodel_t *m = cl.model_precache[i];
+			if (!m)
+				break;
+			if (m->name[0] == '*')
+				continue;
+			num_surfaces += m->numsurfaces;
+		}
+		GL_SortSurfaces ();
+
+		surface_index = 0;
+		for (j = 1; j < MAX_MODELS; j++)
+		{
+			qmodel_t *m = cl.model_precache[j];
+			if (!m || m->name[0] == '*' || m->type != mod_brush)
+				continue;
+
+			r_pcurrentvertbase = m->vertexes;
+			currentmodel = m;
+
+			for (i = 0; i < m->numsurfaces; i++)
+			{
+				surf = &m->surfaces[i];
+				if (surf->flags & SURF_DRAWTILED)
+				{
+					surface_index++;
+					continue;
+				}
+
+				const qboolean no_dlights = j > 1;
+				GL_CreateSurfaceLightmap (surf, surface_index | 0x80000000 * no_dlights);
+				BuildSurfaceDisplayList (surf);
+
+				surface_index++;
+			}
+		}
+
+		// upload the lightmap textures to the RT renderer
+		for (i = 0; i < lightmap_count; i++)
+		{
+			struct lightmap_s *lm = &lightmaps[i];
+
+			char name[32];
+			q_snprintf (name, sizeof (name), "lightmap_%07i", i);
+
+			lm->texture = TexMgr_LoadImage (NULL, cl.worldmodel, name, LMBLOCK_WIDTH, LMBLOCK_HEIGHT, SRC_LIGHTMAP,
+				lm->data, "", (src_offset_t)lm->data, TEXPREF_LINEAR | TEXPREF_NOPICMIP);
+		}
+
+		return;
+	}
+
 	// Spike -- wipe out all the lightmap data (johnfitz -- the gltexture objects were already freed by Mod_ClearAll)
 	for (i = 0; i < lightmap_count; i++)
 	{
@@ -2760,6 +2869,9 @@ void GL_BuildBModelVertexBuffer (void)
 			for (i = 0; i < m->numsurfaces; i++)
 			{
 				msurface_t *s = &m->surfaces[i];
+
+				if (!s->polys)
+					continue;
 
 				s->vbo_firstvert = varray_index;
 

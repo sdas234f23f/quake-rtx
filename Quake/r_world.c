@@ -939,6 +939,57 @@ void R_MarkVisSurfaces (qboolean *use_tasks)
 
 /*
 ===============
+RT_MarkAllWorldSurfaces
+
+Chains every world surface into chain_world. The RT renderer uploads the whole
+world once as static geometry (RG_GEOMETRY_TYPE_STATIC), so PVS/frustum/backface
+culling must not drop any surface (vkquake-rt achieves the same with rt_enable_pvs=0).
+===============
+*/
+static void RT_MarkAllWorldSurfaces (qboolean *use_tasks)
+{
+	int        i;
+	msurface_t *surf;
+	mleaf_t    *leaf;
+	uint32_t    brushpolys = 0;
+
+	// store efrags for every leaf (PVS is not used in RT mode)
+	leaf = &cl.worldmodel->leafs[1];
+	for (i = 0; i < cl.worldmodel->numleafs; i++, leaf++)
+		if (leaf->efrags)
+			R_StoreEfrags (&leaf->efrags);
+
+	// Submodel surfaces (doors, buttons, plats, ...) belong to brush entities
+	// and are uploaded every frame as dynamic geometry with their entity
+	// transform; including them here would leave a static "ghost" at their
+	// BSP default position (the native indirect renderer draws submodels
+	// only as entities too).
+	const int submodel_first_surface =
+		(cl.worldmodel->numsubmodels > 1) ? cl.worldmodel->submodels[1].firstface : cl.worldmodel->numsurfaces;
+
+	for (i = 0; i < cl.worldmodel->numsurfaces; i++)
+	{
+		surf = &cl.worldmodel->surfaces[i];
+
+		// sky surfaces are drawn to the sky cubemap, not ray-traced
+		if (surf->flags & SURF_DRAWSKY)
+			continue;
+
+		// skip brush-entity (submodel) surfaces: they are drawn as dynamic
+		// geometry by RT_DrawBrushModel
+		if (i >= submodel_first_surface)
+			continue;
+
+		++brushpolys;
+		R_ChainSurface (surf, chain_world);
+	}
+
+	Atomic_AddUInt32 (&rs_brushpolys, brushpolys); // count wpolys here
+	R_SetupWorldCBXTexRanges (*use_tasks);
+}
+
+/*
+===============
 R_MarkSurfacesPrepare
 ===============
 */
@@ -956,7 +1007,9 @@ static void R_MarkSurfacesPrepare (void *unused)
 			nearwaterportal = true;
 
 	// choose vis data
-	if (r_novis.value || r_viewleaf->contents == CONTENTS_SOLID || r_viewleaf->contents == CONTENTS_SKY)
+	// q2rtx: the RT renderer uploads the whole world once as static geometry,
+	// so the PVS must not hide any leaf (vkquake-rt does the same via rt_enable_pvs=0).
+	if (CVAR_TO_BOOL (rt_renderer) || r_novis.value || r_viewleaf->contents == CONTENTS_SOLID || r_viewleaf->contents == CONTENTS_SKY)
 		mark_surfaces_state.vis = Mod_NoVisPVS (cl.worldmodel);
 	else if (nearwaterportal)
 		mark_surfaces_state.vis = SV_FatPVS (r_origin, cl.worldmodel);
@@ -1093,14 +1146,19 @@ void R_MarkSurfaces (qboolean use_tasks, task_handle_t before_mark, task_handle_
 	else
 	{
 		R_MarkSurfacesPrepare (NULL);
-		// iterate through leaves, marking surfaces
+		// q2rtx: in RT mode the whole world is chained (uploaded once as static
+		// geometry), so skip PVS/frustum/backface marking entirely.
+		if (CVAR_TO_BOOL (rt_renderer))
+		{
+			RT_MarkAllWorldSurfaces (&use_tasks);
+		}
 #if defined(USE_SIMD)
-		if (use_simd)
+		else if (use_simd)
 		{
 			R_MarkVisSurfacesSIMD (&use_tasks);
 		}
-		else
 #endif
+		else
 			R_MarkVisSurfaces (&use_tasks);
 	}
 }
@@ -1613,7 +1671,9 @@ static void RT_BatchSurface (rt_cb_context_t *cbx, const rt_uploadsurf_state_t *
 		RT_FlushBatch (cbx, s, brushpasses);
 	}
 
-	// fan triangulation, like R_TriangleIndicesForSurf
+	// fan triangulation, like R_TriangleIndicesForSurf in vkquake-rt: the RT
+	// renderer (rayCullBackFacingTriangles) uses the REVERSED winding compared
+	// to the native rasterizer, so the fan is (base+i, base+i-1, base).
 	uint32_t *dest = &cbx->batch_indices[cbx->batch_indices_count];
 	for (int i = 2; i < num_surf_verts; i++)
 	{
@@ -1744,7 +1804,14 @@ void RT_DrawTextureChains_Multitexture (
 	uint32_t brushpasses = 0;
 	for (i = texstart; i < texend; ++i)
 	{
-		t = model->textures[i];
+		// NOTE: the texture-chain ranges (world_texstart/end from
+		// R_SetupWorldCBXTexRanges) are indices into the type-sorted
+		// usedtextures array, exactly like the native R_DrawTextureChains_
+		// Multitexture. Using model->textures[i] directly here would upload a
+		// wrong set of surfaces (some textures never uploaded -> invisible).
+		if (!model->usedtextures)
+			break;
+		t = model->textures[model->usedtextures[i]];
 
 		if (!t || !t->texturechains[chain] || t->texturechains[chain]->flags & (SURF_DRAWTURB | SURF_DRAWTILED | SURF_NOTEXTURE))
 			continue;
@@ -1809,9 +1876,13 @@ void RT_DrawTextureChains (rt_cb_context_t *cbx, qmodel_t *model, entity_t *ent,
 	else
 		entalpha = 1;
 
-	if (!r_gpulightmapupdate.value)
+	// q2rtx: the native lightmap upload path uses the native staging buffers
+	if (!CVAR_TO_BOOL (rt_renderer) && !r_gpulightmapupdate.value)
 		R_UploadLightmaps ();
-	RT_DrawTextureChains_Multitexture (cbx, model, ent, chain, entalpha, 0, model->numtextures, entuniqueid);
+	// The multitexture pass draws the non-sky/non-liquid textures; the ranges
+	// are in the type-sorted usedtextures space (see R_SetupWorldCBXTexRanges),
+	// matching the native R_DrawTextureChains.
+	RT_DrawTextureChains_Multitexture (cbx, model, ent, chain, entalpha, 0, model->texofs[TEXTYPE_SKY], entuniqueid);
 }
 
 #if RT_USE_SPHERE_INSTEAD_OF_POLY
@@ -1904,7 +1975,8 @@ void RT_DrawWorld (rt_cb_context_t *cbx, int index)
 	if (!r_drawworld_cheatsafe)
 		return;
 
-	if (!r_gpulightmapupdate.value)
+	// q2rtx: the native lightmap upload path uses the native staging buffers
+	if (!CVAR_TO_BOOL (rt_renderer) && !r_gpulightmapupdate.value)
 		R_UploadLightmaps ();
 	RT_DrawTextureChains_Multitexture (cbx, cl.worldmodel, NULL, chain_world, 1, world_texstart[index], world_texend[index], ENT_UNIQUEID_WORLD);
 
@@ -2167,7 +2239,7 @@ void RT_UploadAllWorldModelLights (void)
 		RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &rt_wldlights_sph[i]);
 		RG_CHECK (r);
 
-		RT_ClusterLightAdd (rt_wldlights_sph[i].uniqueID, rt_wldlights_sph[i].position.data);
+		RT_ClusterLightAdd (rt_wldlights_sph[i].uniqueID, rt_wldlights_sph[i].position.data, -1.0f);
 	}
 #else
 	for (int i = 0; i < rt_wldlights_tri_count; i++)
@@ -2200,7 +2272,7 @@ void RT_UploadAllWorldModelLights (void)
 		RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &lt);
 		RG_CHECK (r);
 
-		RT_ClusterLightAdd (lt.uniqueID, lt.position.data);
+		RT_ClusterLightAdd (lt.uniqueID, lt.position.data, -1.0f);
 	}
 }
 

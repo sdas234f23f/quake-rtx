@@ -1502,7 +1502,10 @@ void SCR_UpdateScreen (qboolean use_tasks)
 		return; // not safe
 
 	in_update_screen = true;
-	use_tasks = use_tasks && (Tasks_NumWorkers () > 1) && r_tasks.value && r_gpulightmapupdate.value;
+	// q2rtx: the RT renderer runs its frame path serially (world geometry is
+	// submitted between rgBeginStaticGeometries/rgSubmitStaticGeometries, which
+	// must not overlap dynamic uploads from parallel draw tasks).
+	use_tasks = use_tasks && (Tasks_NumWorkers () > 1) && r_tasks.value && r_gpulightmapupdate.value && !CVAR_TO_BOOL (rt_renderer);
 
 	if (scr_disabled_for_loading)
 	{
