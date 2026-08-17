@@ -1343,6 +1343,59 @@ SCR_DrawGUI
 */
 static void SCR_DrawGUI (void *unused)
 {
+	// q2rtx: in RT mode the GUI is uploaded as swapchain-render-type geometry
+	// (the RT context cast is safe: all Draw_* functions branch on rt_renderer
+	// and only read the RT fields of the passed object).
+	if (CVAR_TO_BOOL (rt_renderer))
+	{
+		cb_context_t *cbx = (cb_context_t *)&vulkan_globals_rt.secondary_cb_contexts[RT_CBX_GUI];
+
+		RT_GL_SetCanvas ((rt_cb_context_t *)cbx, CANVAS_DEFAULT);
+
+		SCR_TileClear (cbx);
+
+		if (scr_drawdialog) // new game confirm
+		{
+			if (con_forcedup)
+				Draw_ConsoleBackground (cbx);
+			else
+				Sbar_Draw (cbx);
+			Draw_FadeScreen (cbx);
+			SCR_DrawNotifyString (cbx);
+		}
+		else if (scr_drawloading) // loading
+		{
+			SCR_DrawLoading (cbx);
+			Sbar_Draw (cbx);
+		}
+		else if (cl.intermission == 1 && key_dest == key_game) // end of level
+		{
+			Sbar_IntermissionOverlay (cbx);
+		}
+		else if (cl.intermission == 2 && key_dest == key_game) // end of episode
+		{
+			Sbar_FinaleOverlay (cbx);
+			SCR_CheckDrawCenterString (cbx);
+		}
+		else
+		{
+			SCR_DrawCrosshair (cbx); // johnfitz
+			SCR_DrawNet (cbx);
+			SCR_DrawTurtle (cbx);
+			SCR_DrawPause (cbx);
+			SCR_CheckDrawCenterString (cbx);
+			Sbar_Draw (cbx);
+			SCR_DrawDevStats (cbx); // johnfitz
+			SCR_DrawFPS (cbx);		// johnfitz
+			SCR_DrawSpeeds (cbx);
+			SCR_DrawClock (cbx); // johnfitz
+			SCR_DrawConsole (cbx);
+			M_Draw (cbx);
+		}
+
+		return;
+	}
+
 	cb_context_t *cbx = vulkan_globals.secondary_cb_contexts[SCBX_GUI];
 
 	GL_SetCanvas (cbx, CANVAS_DEFAULT);

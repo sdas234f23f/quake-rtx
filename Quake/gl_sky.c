@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // gl_sky.c
 
 #include "quakedef.h"
+#include "gl_heap.h"
 
 float Fog_GetDensity (void);
 void  Fog_GetColor (float *c);
@@ -1197,6 +1198,430 @@ static void Skywind_UpdateParams (float *wind_phase, vec3_t wind_dir)
 		wind_dir[1] = 0.0f;
 		wind_dir[2] = 0.0f;
 		*wind_phase = 0.0f;
+	}
+}
+
+// ============================================================================
+// q2rtx: RT renderer sky drawing (ported from vkquake-rt)
+// ============================================================================
+
+typedef struct
+{
+	RgVertex *verts;
+	int       verts_count;
+	int       verts_allocated;
+} rt_skybatch_t;
+static rt_skybatch_t rt_skybatch_solid = {0};
+static rt_skybatch_t rt_skybatch_alpha = {0};
+
+// sky display tint = rt_sky_color_* * rt_sky_brightness * rt_brightness.
+static void RT_GetSkyTintColor (float color[3])
+{
+	extern cvar_t rt_sky_color_r, rt_sky_color_g, rt_sky_color_b, rt_sky_brightness, rt_brightness;
+	const float mult = CVAR_TO_FLOAT (rt_sky_brightness) * CVAR_TO_FLOAT (rt_brightness);
+	color[0] = mult * (CLAMP (0, CVAR_TO_INT32 (rt_sky_color_r), 255) / 255.0f);
+	color[1] = mult * (CLAMP (0, CVAR_TO_INT32 (rt_sky_color_g), 255) / 255.0f);
+	color[2] = mult * (CLAMP (0, CVAR_TO_INT32 (rt_sky_color_b), 255) / 255.0f);
+}
+
+static void RT_Sky_ProcessPoly (rt_cb_context_t *cbx, glpoly_t *p, float color[3], uint64_t uniqueid)
+{
+	const static RgTransform tr = RT_TRANSFORM_IDENTITY;
+
+	// draw it
+	DrawGLPoly_RT (cbx, uniqueid, p, color, 1.0f, &tr, NULL, DRAW_GL_POLY_TYPE_SKY);
+	Atomic_IncrementUInt32 (&rs_brushpasses);
+}
+
+void RT_Sky_ProcessTextureChains (rt_cb_context_t *cbx, float color[3])
+{
+	int         i;
+	msurface_t *s;
+	texture_t  *t;
+
+	if (!r_drawworld_cheatsafe)
+		return;
+
+	for (i = 0; i < cl.worldmodel->numtextures; i++)
+	{
+		t = cl.worldmodel->textures[i];
+
+		if (!t || !t->texturechains[chain_world] || !(t->texturechains[chain_world]->flags & SURF_DRAWSKY))
+			continue;
+
+		for (s = t->texturechains[chain_world]; s; s = s->texturechains[chain_world])
+		{
+			RT_Sky_ProcessPoly (cbx, s->polys, color, RT_GetBrushSurfUniqueId (ENT_UNIQUEID_WORLD, cl.worldmodel, s, 0));
+		}
+	}
+}
+
+static void RT_Sky_DrawSkySurface (
+	rt_cb_context_t *cbx, float color[3], int entuniqueid, entity_t *e, qmodel_t *model, msurface_t *s, qboolean rotated, vec3_t forward, vec3_t right, vec3_t up)
+{
+	// copy the polygon and translate manually, since RT_Sky_ProcessPoly needs it to be in world space
+	TEMP_ALLOC (glpoly_t, p, s->polys->numverts);
+	p->numverts = s->polys->numverts;
+	for (int k = 0; k < p->numverts; k++)
+	{
+		if (rotated)
+		{
+			p->verts[k][0] = e->origin[0] + s->polys->verts[k][0] * forward[0] - s->polys->verts[k][1] * right[0] + s->polys->verts[k][2] * up[0];
+			p->verts[k][1] = e->origin[1] + s->polys->verts[k][0] * forward[1] - s->polys->verts[k][1] * right[1] + s->polys->verts[k][2] * up[1];
+			p->verts[k][2] = e->origin[2] + s->polys->verts[k][0] * forward[2] - s->polys->verts[k][1] * right[2] + s->polys->verts[k][2] * up[2];
+		}
+		else
+		{
+			float *s_poly_vert = &s->polys->verts[0][0] + (k * VERTEXSIZE);
+			float *poly_vert = &p->verts[0][0] + (k * VERTEXSIZE);
+			VectorAdd (s_poly_vert, e->origin, poly_vert);
+		}
+	}
+
+	RT_Sky_ProcessPoly (cbx, p, color, RT_GetBrushSurfUniqueId (entuniqueid, model, s, 0));
+	TEMP_FREE (p);
+}
+
+void RT_Sky_ProcessEntities (rt_cb_context_t *cbx, float color[3])
+{
+	entity_t   *e;
+	msurface_t *s;
+	int         i, j;
+	float       dot;
+	qboolean    rotated;
+	vec3_t      temp, forward, right, up;
+	vec3_t      modelorg;
+
+	extern cvar_t rt_enable_pvs;
+
+	if (!r_drawentities.value)
+		return;
+
+	for (i = 0; i < cl_numvisedicts; i++)
+	{
+		e = cl_visedicts[i];
+
+		if (!e->model)
+			continue;
+
+		if (e->model->type != mod_brush)
+			continue;
+
+		if (CVAR_TO_BOOL (rt_enable_pvs))
+		{
+			if (R_CullModelForEntity (e))
+				continue;
+		}
+
+		if (e->alpha == ENTALPHA_ZERO)
+			continue;
+
+		VectorSubtract (r_refdef.vieworg, e->origin, modelorg);
+		if (e->angles[0] || e->angles[1] || e->angles[2])
+		{
+			rotated = true;
+			AngleVectors (e->angles, forward, right, up);
+			VectorCopy (modelorg, temp);
+			modelorg[0] = DotProduct (temp, forward);
+			modelorg[1] = -DotProduct (temp, right);
+			modelorg[2] = DotProduct (temp, up);
+		}
+		else
+			rotated = false;
+
+		s = &e->model->surfaces[e->model->firstmodelsurface];
+
+		for (j = 0; j < e->model->nummodelsurfaces; j++, s++)
+		{
+			if (s->flags & SURF_DRAWSKY)
+			{
+				dot = DotProduct (modelorg, s->plane->normal) - s->plane->dist;
+				if (((s->flags & SURF_PLANEBACK) && (dot < -BACKFACE_EPSILON)) || (!(s->flags & SURF_PLANEBACK) && (dot > BACKFACE_EPSILON)))
+				{
+					RT_Sky_DrawSkySurface (cbx, color, i, e, e->model, s, rotated, forward, right, up);
+				}
+			}
+		}
+	}
+}
+
+void RT_Sky_EmitSkyBoxVertex (RgVertex *vertex, float s, float t, int axis)
+{
+	vec3_t v, b;
+	int    j, k;
+	float  w, h;
+
+	b[0] = s * gl_farclip.value / sqrt (3.0);
+	b[1] = t * gl_farclip.value / sqrt (3.0);
+	b[2] = gl_farclip.value / sqrt (3.0);
+
+	for (j = 0; j < 3; j++)
+	{
+		k = st_to_vec[axis][j];
+		if (k < 0)
+			v[j] = -b[-k - 1];
+		else
+			v[j] = b[k - 1];
+		v[j] += r_origin[j];
+	}
+
+	// convert from range [-1,1] to [0,1]
+	s = (s + 1) * 0.5;
+	t = (t + 1) * 0.5;
+
+	// avoid bilerp seam
+	w = skybox.textures[skytexorder[axis]]->width;
+	h = skybox.textures[skytexorder[axis]]->height;
+	s = s * (w - 1) / w + 0.5 / w;
+	t = t * (h - 1) / h + 0.5 / h;
+
+	t = 1.0 - t;
+
+	vertex->position[0] = v[0];
+	vertex->position[1] = v[1];
+	vertex->position[2] = v[2];
+
+	vertex->texCoord[0] = s;
+	vertex->texCoord[1] = t;
+
+	vertex->packedColor = RT_PACKED_COLOR_WHITE;
+}
+
+void RT_Sky_DrawSkyBox (rt_cb_context_t *cbx, const float skyTint[3])
+{
+	int i;
+
+	for (i = 0; i < 6; i++)
+	{
+		gltexture_t *texture = skybox.textures[skytexorder[i]];
+
+		RgVertex vertices[4] = {0};
+
+		float skymins_cur[2] = {-1, -1};
+		float skymaxs_cur[2] = {1, 1};
+		RT_Sky_EmitSkyBoxVertex (vertices + 0, skymins_cur[0], skymins_cur[1], i);
+		RT_Sky_EmitSkyBoxVertex (vertices + 1, skymins_cur[0], skymaxs_cur[1], i);
+		RT_Sky_EmitSkyBoxVertex (vertices + 2, skymaxs_cur[0], skymaxs_cur[1], i);
+		RT_Sky_EmitSkyBoxVertex (vertices + 3, skymaxs_cur[0], skymins_cur[1], i);
+
+		RgRasterizedGeometryUploadInfo info = {
+			.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_SKY,
+			.pVertices = vertices,
+			.indexCount = RT_GetFanIndexCount (countof (vertices)),
+			.pIndices = RT_GetFanIndices (countof (vertices)),
+			.transform = RT_TRANSFORM_IDENTITY,
+			.color = {skyTint[0], skyTint[1], skyTint[2], 1.0f},
+			.material = texture ? texture->rtmaterial : RG_NO_MATERIAL,
+			.pipelineState = 0,
+			.blendFuncSrc = 0,
+			.blendFuncDst = 0,
+		};
+
+		RgResult r = rgUploadRasterizedGeometry (vulkan_globals_rt.instance, &info, NULL, NULL);
+		RG_CHECK (r);
+
+		Atomic_IncrementUInt32 (&rs_skypolys);
+	}
+}
+
+static void RT_Sky_SetBoxVert (float s, float t, int axis, vec3_t v)
+{
+	vec3_t b;
+	int    j, k;
+
+	b[0] = s * gl_farclip.value / sqrt (3.0);
+	b[1] = t * gl_farclip.value / sqrt (3.0);
+	b[2] = gl_farclip.value / sqrt (3.0);
+
+	for (j = 0; j < 3; j++)
+	{
+		k = st_to_vec[axis][j];
+		if (k < 0)
+			v[j] = -b[-k - 1];
+		else
+			v[j] = b[k - 1];
+		v[j] += r_origin[j];
+	}
+}
+
+static void RT_Sky_GetTexCoord (const vec3_t v, float speed, float *s, float *t)
+{
+	vec3_t dir;
+	float  length, scroll;
+
+	VectorSubtract (v, r_origin, dir);
+	dir[2] *= 3; // flatten the sphere
+
+	length = dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2];
+	length = sqrtf (length);
+	length = 6 * 63 / length;
+
+	scroll = (float)cl.time * speed;
+	scroll -= (int)scroll & ~127;
+
+	*s = (scroll + dir[0] * length) * (1.0f / 128);
+	*t = (scroll + dir[1] * length) * (1.0f / 128);
+}
+
+static void RT_Sky_DrawFaceQuad (rt_cb_context_t *cbx, glpoly_t *p, float alpha, const float skyTint[3])
+{
+	const float *src = p->verts[0];
+
+	const uint32_t packedTint = RT_PackColorToUint32_FromFloat01 (skyTint[0], skyTint[1], skyTint[2], 1.0f);
+
+	const uint32_t *indices = RT_GetFanIndices (4);
+	const int       indexcount = RT_GetFanIndexCount (4);
+
+	for (int alphalayer = 0; alphalayer <= 1; alphalayer++)
+	{
+		rt_skybatch_t *batch = alphalayer ? &rt_skybatch_alpha : &rt_skybatch_solid;
+
+		if (batch->verts_count + indexcount >= batch->verts_allocated)
+		{
+			batch->verts_allocated += 1024;
+			batch->verts = Mem_Realloc (batch->verts, sizeof (RgVertex) * batch->verts_allocated);
+		}
+
+		RgVertex *dst = &batch->verts[batch->verts_count];
+
+		for (int i = 0; i < indexcount; i++)
+		{
+			uint32_t src_index = indices[i];
+			const float *v = src + (size_t)VERTEXSIZE * src_index;
+
+			dst[i].position[0] = v[0];
+			dst[i].position[1] = v[1];
+			dst[i].position[2] = v[2];
+			RT_Sky_GetTexCoord (v, alphalayer ? 16 : 8, &dst[i].texCoord[0], &dst[i].texCoord[1]);
+			dst[i].packedColor = packedTint;
+		}
+
+		batch->verts_count += indexcount;
+	}
+
+	Atomic_IncrementUInt32 (&rs_skypolys);
+}
+
+static void RT_Sky_DrawFace (rt_cb_context_t *cbx, int axis, float alpha, const float skyTint[3])
+{
+	rt_skybatch_solid.verts_count = 0;
+	rt_skybatch_alpha.verts_count = 0;
+
+	glpoly_t p;
+	vec3_t   verts[4];
+	int      i, j;
+	float    di, qi, dj, qj;
+	vec3_t   up, right, temp, temp2;
+
+	RT_Sky_SetBoxVert (-1.0, -1.0, axis, verts[0]);
+	RT_Sky_SetBoxVert (-1.0, 1.0, axis, verts[1]);
+	RT_Sky_SetBoxVert (1.0, 1.0, axis, verts[2]);
+	RT_Sky_SetBoxVert (1.0, -1.0, axis, verts[3]);
+
+	VectorSubtract (verts[2], verts[3], up);
+	VectorSubtract (verts[2], verts[1], right);
+
+	di = q_max ((int)r_sky_quality.value, 1);
+	qi = 1.0 / di;
+	dj = (axis < 4) ? di * 2 : di; // subdivide vertically more than horizontally on skybox sides
+	qj = 1.0 / dj;
+
+	for (i = 0; i < di; i++)
+	{
+		for (j = 0; j < dj; j++)
+		{
+			VectorScale (right, qi * i, temp);
+			VectorScale (up, qj * j, temp2);
+			VectorAdd (temp, temp2, temp);
+			VectorAdd (verts[0], temp, p.verts[0]);
+
+			VectorScale (up, qj, temp);
+			VectorAdd (p.verts[0], temp, p.verts[1]);
+
+			VectorScale (right, qi, temp);
+			VectorAdd (p.verts[1], temp, p.verts[2]);
+
+			VectorAdd (p.verts[0], temp, p.verts[3]);
+
+			RT_Sky_DrawFaceQuad (cbx, &p, alpha, skyTint);
+		}
+	}
+
+	for (int alphalayer = 0; alphalayer <= 1; alphalayer++)
+	{
+		gltexture_t *texture = alphalayer ? alphaskytexture : solidskytexture;
+
+		RgRasterizedGeometryUploadInfo info = {
+			.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_SKY,
+			.vertexCount = alphalayer ? rt_skybatch_alpha.verts_count : rt_skybatch_solid.verts_count,
+			.pVertices = alphalayer ? rt_skybatch_alpha.verts : rt_skybatch_solid.verts,
+			.transform = RT_TRANSFORM_IDENTITY,
+			.color = {1.0f, 1.0f, 1.0f, alpha},
+			.material = texture ? texture->rtmaterial : RG_NO_MATERIAL,
+			.pipelineState = alphalayer ? RG_RASTERIZED_GEOMETRY_STATE_BLEND_ENABLE : 0,
+			.blendFuncSrc = alphalayer ? RG_BLEND_FACTOR_SRC_ALPHA : 0,
+			.blendFuncDst = alphalayer ? RG_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : 0,
+		};
+
+		RgResult r = rgUploadRasterizedGeometry (vulkan_globals_rt.instance, &info, NULL, NULL);
+		RG_CHECK (r);
+	}
+
+	rt_skybatch_solid.verts_count = 0;
+	rt_skybatch_alpha.verts_count = 0;
+}
+
+void RT_Sky_DrawSkyLayers (rt_cb_context_t *cbx, const float skyTint[3])
+{
+	int i;
+	if (!solidskytexture || !alphaskytexture)
+		return;
+
+	for (i = 0; i < 6; i++)
+		RT_Sky_DrawFace (cbx, i, r_skyalpha.value, skyTint);
+}
+
+/*
+==============
+Sky_DrawSky_RT
+
+RT renderer version of Sky_DrawSky.
+==============
+*/
+void Sky_DrawSky_RT (rt_cb_context_t *cbx)
+{
+	if (r_lightmap_cheatsafe)
+		return;
+
+	const qboolean slow_sky = !CVAR_TO_BOOL (r_fastsky);
+
+	float color[4];
+	if (Fog_GetDensity () > 0)
+		Fog_GetColor (color);
+	else
+		memcpy (color, skyflatcolor, 3 * sizeof (float));
+
+	// sky display color + brightness modulate the sky surfaces drawn into
+	// the ray-traced sky cubemap (the primary sky color comes straight from
+	// that cubemap).
+	float skyTint[3];
+	RT_GetSkyTintColor (skyTint);
+	color[0] *= skyTint[0];
+	color[1] *= skyTint[1];
+	color[2] *= skyTint[2];
+
+	RT_Sky_ProcessTextureChains (cbx, color);
+	RT_Sky_ProcessEntities (cbx, color);
+
+	//
+	// render slow sky: cloud layers or skybox
+	//
+	if (slow_sky)
+	{
+		if (skybox.name[0])
+			RT_Sky_DrawSkyBox (cbx, skyTint);
+		else
+			RT_Sky_DrawSkyLayers (cbx, skyTint);
 	}
 }
 

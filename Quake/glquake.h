@@ -1131,6 +1131,23 @@ typedef struct rt_cb_context_s
 void DrawGLPoly_RT (
 	rt_cb_context_t *cbx, uint64_t uniqueid, glpoly_t *p, float color[3], float alpha, const RgTransform *transform, const gltexture_t *tex, uint32_t type);
 
+// q2rtx: RT renderer 2D canvas setup (defined in gl_draw.c)
+void RT_GL_SetCanvas (rt_cb_context_t *cbx, canvastype newcanvas);
+void RT_GL_Viewport (rt_cb_context_t *cbx, float x, float y, float width, float height, float min_depth, float max_depth);
+
+// q2rtx: RT renderer draw entry points (defined in r_world.c / gl_sky.c /
+// r_alias.c / r_brush.c / r_sprite.c / r_part.c)
+void RT_DrawWorld (rt_cb_context_t *cbx, int index);
+void RT_DrawWorld_Water (rt_cb_context_t *cbx);
+void RT_DrawWorld_ShowTris (rt_cb_context_t *cbx);
+void RT_DrawTextureChains (rt_cb_context_t *cbx, qmodel_t *model, entity_t *ent, texchain_t chain, int entuniqueid);
+void RT_DrawTextureChains_Water (rt_cb_context_t *cbx, qmodel_t *model, entity_t *ent, texchain_t chain, int entuniqueid);
+void Sky_DrawSky_RT (rt_cb_context_t *cbx);
+void RT_DrawAliasModel (rt_cb_context_t *cbx, entity_t *e, int entuniqueid);
+void RT_DrawBrushModel (rt_cb_context_t *cbx, entity_t *e, int chain, int entuniqueid);
+void RT_DrawSpriteModel (rt_cb_context_t *cbx, entity_t *e, int entuniqueid);
+void RT_DrawParticles (rt_cb_context_t *cbx);
+
 typedef struct
 {
 	// RT

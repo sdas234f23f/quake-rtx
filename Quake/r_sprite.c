@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // r_sprite.c -- sprite model rendering
 
 #include "quakedef.h"
+#include "gl_heap.h"
 
 extern cvar_t r_showtris;
 
@@ -195,6 +196,191 @@ static void R_CreateSpriteVertices (entity_t *e, mspriteframe_t *frame, basicver
 	vertices[3].position[2] = point[2];
 	vertices[3].texcoord[0] = frame->smax;
 	vertices[3].texcoord[1] = frame->tmax;
+}
+
+// ============================================================================
+// q2rtx: RT renderer sprite drawing (ported from vkquake-rt)
+// ============================================================================
+
+extern cvar_t rt_model_rough;
+extern cvar_t rt_model_metal;
+extern cvar_t rt_dlight_intensity;
+extern cvar_t rt_dlight_radius;
+
+static void RT_CreateSpriteVertices (entity_t *e, mspriteframe_t *frame, RgVertex *vertices)
+{
+	vec3_t	   point, v_forward, v_right, v_up;
+	msprite_t *psprite;
+	float	  *s_up, *s_right;
+	float	   angle, sr, cr;
+	float	   scale = ENTSCALE_DECODE (e->netstate.scale);
+
+	psprite = (msprite_t *)Mod_Extradata (e->model);
+
+	switch (psprite->type)
+	{
+	case SPR_VP_PARALLEL_UPRIGHT: // faces view plane, up is towards the heavens
+		v_up[0] = 0;
+		v_up[1] = 0;
+		v_up[2] = 1;
+		CrossProduct (vpn, v_up, v_right);
+		VectorNormalizeFast (v_right);
+		s_up = v_up;
+		s_right = v_right;
+		break;
+	case SPR_FACING_UPRIGHT: // faces camera origin, up is towards the heavens
+		VectorSubtract (e->origin, r_origin, v_forward);
+		v_forward[2] = 0;
+		VectorNormalizeFast (v_forward);
+		v_right[0] = v_forward[1];
+		v_right[1] = -v_forward[0];
+		v_right[2] = 0;
+		v_up[0] = 0;
+		v_up[1] = 0;
+		v_up[2] = 1;
+		s_up = v_up;
+		s_right = v_right;
+		break;
+	case SPR_VP_PARALLEL: // faces view plane, up is towards the top of the screen
+		s_up = vup;
+		s_right = vright;
+		break;
+	case SPR_ORIENTED: // pitch yaw roll are independent of camera
+		AngleVectors (e->angles, v_forward, v_right, v_up);
+		s_up = v_up;
+		s_right = v_right;
+		break;
+	case SPR_VP_PARALLEL_ORIENTED: // faces view plane, but obeys roll value
+		angle = e->angles[ROLL] * M_PI_DIV_180;
+		sr = sin (angle);
+		cr = cos (angle);
+		v_right[0] = vright[0] * cr + vup[0] * sr;
+		v_right[1] = vright[1] * cr + vup[1] * sr;
+		v_right[2] = vright[2] * cr + vup[2] * sr;
+		v_up[0] = vright[0] * -sr + vup[0] * cr;
+		v_up[1] = vright[1] * -sr + vup[1] * cr;
+		v_up[2] = vright[2] * -sr + vup[2] * cr;
+		s_up = v_up;
+		s_right = v_right;
+		break;
+	default:
+		return;
+	}
+
+	VectorMA (e->origin, frame->down * scale, s_up, point);
+	VectorMA (point, frame->left * scale, s_right, point);
+	vertices[0].position[0] = point[0];
+	vertices[0].position[1] = point[1];
+	vertices[0].position[2] = point[2];
+	vertices[0].texCoord[0] = 0.0f;
+	vertices[0].texCoord[1] = frame->tmax;
+	vertices[0].packedColor = RT_PACKED_COLOR_WHITE;
+
+	VectorMA (e->origin, frame->up * scale, s_up, point);
+	VectorMA (point, frame->left * scale, s_right, point);
+	vertices[1].position[0] = point[0];
+	vertices[1].position[1] = point[1];
+	vertices[1].position[2] = point[2];
+	vertices[1].texCoord[0] = 0.0f;
+	vertices[1].texCoord[1] = 0.0f;
+	vertices[1].packedColor = RT_PACKED_COLOR_WHITE;
+
+	VectorMA (e->origin, frame->up * scale, s_up, point);
+	VectorMA (point, frame->right * scale, s_right, point);
+	vertices[2].position[0] = point[0];
+	vertices[2].position[1] = point[1];
+	vertices[2].position[2] = point[2];
+	vertices[2].texCoord[0] = frame->smax;
+	vertices[2].texCoord[1] = 0.0f;
+	vertices[2].packedColor = RT_PACKED_COLOR_WHITE;
+
+	VectorMA (e->origin, frame->down * scale, s_up, point);
+	VectorMA (point, frame->right * scale, s_right, point);
+	vertices[3].position[0] = point[0];
+	vertices[3].position[1] = point[1];
+	vertices[3].position[2] = point[2];
+	vertices[3].texCoord[0] = frame->smax;
+	vertices[3].texCoord[1] = frame->tmax;
+	vertices[3].packedColor = RT_PACKED_COLOR_WHITE;
+}
+
+void RT_DrawSpriteModel (rt_cb_context_t *cbx, entity_t *e, int entuniqueid)
+{
+	msprite_t	   *psprite = (msprite_t *)Mod_Extradata (e->model);
+	mspriteframe_t *frame = R_GetSpriteFrame (e);
+	gltexture_t    *tx = frame->gltexture;
+
+	RgVertex vertices[4] = {0};
+	RT_CreateSpriteVertices (e, frame, vertices);
+
+	qboolean is_decal = psprite->type == SPR_ORIENTED;
+	qboolean is_rasterized = is_decal;
+
+	if (tx && tx->rtcustomtextype == RT_CUSTOMTEXTUREINFO_TYPE_RASTER_LIGHT)
+	{
+		is_rasterized = true;
+
+		vec3_t color = {tx->rtlightcolor[0], tx->rtlightcolor[1], tx->rtlightcolor[2]};
+		VectorScale (color, CVAR_TO_FLOAT (rt_dlight_intensity), color);
+		RT_FIXUP_LIGHT_INTENSITY (color, true);
+
+		RgSphericalLightUploadInfo light_info = {
+			.uniqueID = RT_GetSpriteModelUniqueId (entuniqueid),
+			.color = {color[0], color[1], color[2]},
+			.position = {e->origin[0], e->origin[1], e->origin[2]},
+			.radius = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_dlight_radius)),
+		};
+
+		RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &light_info);
+		RG_CHECK (r);
+	}
+
+	if (is_rasterized)
+	{
+		RgRasterizedGeometryUploadInfo info = {
+			.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_DEFAULT,
+			.vertexCount = countof (vertices),
+			.pVertices = vertices,
+			.indexCount = RT_GetFanIndexCount (countof (vertices)),
+			.pIndices = RT_GetFanIndices (countof (vertices)),
+			.transform = RT_TRANSFORM_IDENTITY,
+			.color = RT_COLOR_WHITE,
+			.material = tx ? tx->rtmaterial : RG_NO_MATERIAL,
+			.pipelineState =
+				RG_RASTERIZED_GEOMETRY_STATE_DEPTH_TEST |
+				RG_RASTERIZED_GEOMETRY_STATE_DEPTH_WRITE |
+				RG_RASTERIZED_GEOMETRY_STATE_ALPHA_TEST,
+			.blendFuncSrc = 0,
+			.blendFuncDst = 0,
+		};
+
+		RgResult r = rgUploadRasterizedGeometry (vulkan_globals_rt.instance, &info, NULL, NULL);
+		RG_CHECK (r);
+	}
+	else
+	{
+		RgGeometryUploadInfo info = {
+			.uniqueID = RT_GetSpriteModelUniqueId (entuniqueid),
+			.flags = RG_GEOMETRY_UPLOAD_GENERATE_NORMALS_BIT,
+			.geomType = RG_GEOMETRY_TYPE_DYNAMIC,
+			.passThroughType = RG_GEOMETRY_PASS_THROUGH_TYPE_ALPHA_TESTED,
+			.visibilityType = RG_GEOMETRY_VISIBILITY_TYPE_WORLD_0,
+			.vertexCount = countof (vertices),
+			.pVertices = vertices,
+			.indexCount = RT_GetFanIndexCount (countof (vertices)),
+			.pIndices = RT_GetFanIndices (countof (vertices)),
+			.layerColors = {RT_COLOR_WHITE},
+			.layerBlendingTypes = {RG_GEOMETRY_MATERIAL_BLEND_TYPE_OPAQUE},
+			.defaultRoughness = CVAR_TO_FLOAT (rt_model_rough),
+			.defaultMetallicity = CVAR_TO_FLOAT (rt_model_metal),
+			.defaultEmission = 0,
+			.geomMaterial = {tx ? tx->rtmaterial : RG_NO_MATERIAL},
+			.transform = RT_TRANSFORM_IDENTITY,
+		};
+
+		RgResult r = rgUploadGeometry (vulkan_globals_rt.instance, &info);
+		RG_CHECK (r);
+	}
 }
 
 /*

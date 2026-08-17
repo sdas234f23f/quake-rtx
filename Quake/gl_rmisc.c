@@ -4754,7 +4754,8 @@ void R_NewMap (void)
 
 	if (CVAR_TO_BOOL (rt_renderer))
 	{
-		// TODO(rt-port): RT_ParseElights() once the light system is ported
+		// q2rtx: parse static entity lights + teleports + custom lights
+		RT_ParseElights ();
 		RT_ParseTeleports ();
 		RT_CustomLights_Parse ();
 	}

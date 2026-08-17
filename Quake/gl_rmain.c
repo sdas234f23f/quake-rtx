@@ -394,6 +394,647 @@ static void R_SetupContext (cb_context_t *cbx)
 	R_PushConstants (cbx, VK_SHADER_STAGE_ALL_GRAPHICS, 0, 16 * sizeof (float), vulkan_globals.view_projection_matrix);
 }
 
+// ============================================================================
+// q2rtx: RT renderer view setup and render orchestration (ported from vkquake-rt)
+// ============================================================================
+
+extern cvar_t rt_dlight_intensity;
+extern cvar_t rt_dlight_radius;
+extern cvar_t rt_flashlight;
+extern cvar_t rt_sun;
+extern cvar_t rt_sun_pitch;
+extern cvar_t rt_sun_yaw;
+extern cvar_t rt_classic_render;
+extern cvar_t rt_enable_pvs;
+
+/*
+=============
+RT_R_SetupMatrices
+=============
+*/
+static void RT_R_SetupMatrices (void)
+{
+	// Projection matrix
+	GL_FrustumMatrix (vulkan_globals_rt.projection_matrix, DEG2RAD (r_fovx), DEG2RAD (r_fovy));
+
+	// View matrix
+	float rotation_matrix[16];
+	RotationMatrix (vulkan_globals_rt.view_matrix, -M_PI / 2.0f, 1.0f, 0.0f, 0.0f);
+	RotationMatrix (rotation_matrix, M_PI / 2.0f, 0.0f, 0.0f, 1.0f);
+	MatrixMultiply (vulkan_globals_rt.view_matrix, rotation_matrix);
+	RotationMatrix (rotation_matrix, DEG2RAD (-r_refdef.viewangles[2]), 1.0f, 0.0f, 0.0f);
+	MatrixMultiply (vulkan_globals_rt.view_matrix, rotation_matrix);
+	RotationMatrix (rotation_matrix, DEG2RAD (-r_refdef.viewangles[0]), 0.0f, 1.0f, 0.0f);
+	MatrixMultiply (vulkan_globals_rt.view_matrix, rotation_matrix);
+	RotationMatrix (rotation_matrix, DEG2RAD (-r_refdef.viewangles[1]), 0.0f, 0.0f, 1.0f);
+	MatrixMultiply (vulkan_globals_rt.view_matrix, rotation_matrix);
+
+	float translation_matrix[16];
+	TranslationMatrix (translation_matrix, -r_refdef.vieworg[0], -r_refdef.vieworg[1], -r_refdef.vieworg[2]);
+	MatrixMultiply (vulkan_globals_rt.view_matrix, translation_matrix);
+
+	// View projection matrix
+	memcpy (vulkan_globals_rt.view_projection_matrix, vulkan_globals_rt.projection_matrix, 16 * sizeof (float));
+	MatrixMultiply (vulkan_globals_rt.view_projection_matrix, vulkan_globals_rt.view_matrix);
+}
+
+/*
+=============
+RT_R_SetupContext
+=============
+*/
+static void RT_R_SetupContext (rt_cb_context_t *cbx)
+{
+	RT_GL_Viewport (
+		cbx, r_refdef.vrect.x, glheight - r_refdef.vrect.y - r_refdef.vrect.height, r_refdef.vrect.width, r_refdef.vrect.height, 0.0f, 1.0f);
+}
+
+static void RT_UploadAllDlights (void)
+{
+	for (int i = 0; i < MAX_DLIGHTS; i++)
+	{
+		const dlight_t *l = &cl_dlights[i];
+
+		if (l->die < cl.time || !l->radius)
+		{
+			continue;
+		}
+
+		// The muzzle-flash / explosion dlights use a small sphere (point-light
+		// model). The intensity must NOT be scaled by the dlight radius.
+		vec3_t color = {l->color[0], l->color[1], l->color[2]};
+		VectorScale (color, CVAR_TO_FLOAT (rt_dlight_intensity), color);
+		RT_FIXUP_LIGHT_INTENSITY (color, true);
+
+		RgSphericalLightUploadInfo info = {
+			.uniqueID = i,
+			.color = {color[0], color[1], color[2]},
+			.position = {l->origin[0], l->origin[1], l->origin[2]},
+			.radius = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_dlight_radius)),
+		};
+
+		RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &info);
+		RG_CHECK (r);
+
+		// register for the per-cluster light lists
+		RT_ClusterLightAdd (info.uniqueID, l->origin);
+	}
+
+	if (CVAR_TO_FLOAT (rt_flashlight) > 0.1f)
+	{
+		vec3_t pos;
+		VectorCopy (r_origin, pos);
+		VectorMA (pos, METRIC_TO_QUAKEUNIT (-0.3f), vup, pos);
+		VectorMA (pos, METRIC_TO_QUAKEUNIT (-0.4f), vright, pos);
+
+		vec3_t color;
+		RT_INIT_DEFAULT_LIGHT_COLOR (color);
+		VectorScale (color, CVAR_TO_FLOAT (rt_flashlight), color);
+		RT_FIXUP_LIGHT_INTENSITY (color, true);
+
+		RgSpotLightUploadInfo info = {
+			.uniqueID = (uint64_t)UINT32_MAX + 0,
+			.color = {color[0], color[1], color[2]},
+			.position = {pos[0], pos[1], pos[2]},
+			.direction = {vpn[0], vpn[1], vpn[2]},
+			.radius = METRIC_TO_QUAKEUNIT (0.1f),
+			.angleOuter = DEG2RAD (30),
+			.angleInner = 0,
+		};
+
+		RgResult r = rgUploadSpotLight (vulkan_globals_rt.instance, &info);
+		RG_CHECK (r);
+	}
+
+	if (CVAR_TO_FLOAT (rt_sun) > 0.001f)
+	{
+		vec3_t angles = {CVAR_TO_FLOAT (rt_sun_pitch), CVAR_TO_FLOAT (rt_sun_yaw), 0};
+
+		vec3_t forward, right, up;
+		AngleVectors (angles, forward, right, up);
+
+		vec3_t color;
+		RT_INIT_SKY_LIGHT_COLOR (color);
+		// sun brightness is controlled solely by rt_sun (not rt_globallight_mult)
+		extern cvar_t rt_brightness;
+		VectorScale (color, CVAR_TO_FLOAT (rt_sun) * CVAR_TO_FLOAT (rt_brightness), color);
+		RT_APPLY_LIGHT_TINT (color);
+
+		RgDirectionalLightUploadInfo info = {
+			.uniqueID = (uint64_t)UINT32_MAX + 1,
+			.color = {color[0], color[1], color[2]},
+			.direction = {forward[0], forward[1], forward[2]},
+			.angularDiameterDegrees = 0.05f,
+		};
+
+		RgResult r = rgUploadDirectionalLight (vulkan_globals_rt.instance, &info);
+		RG_CHECK (r);
+	}
+}
+
+/*
+===============
+RT_R_SetupViewBeforeMark
+===============
+*/
+static void RT_R_SetupViewBeforeMark (void)
+{
+	// In the RT renderer the classic dlight lightmap patches are NOT used (the
+	// RT handles the dynamic lighting via the uploaded sphere lights) - pushing
+	// them here would bake the old square "sprite" light patches into the
+	// lightmaps and they'd show on top of the RT lighting.
+	if (CVAR_TO_BOOL (rt_classic_render) && !r_gpulightmapupdate.value)
+		R_PushDlights ();
+	R_AnimateLight ();
+
+	// build the transformation matrix for the given view angles
+	VectorCopy (r_refdef.vieworg, r_origin);
+	AngleVectors (r_refdef.viewangles, vpn, vright, vup);
+
+	// current viewleaf
+	r_oldviewleaf = r_viewleaf;
+	r_viewleaf = Mod_PointInLeaf (r_origin, cl.worldmodel);
+
+	V_SetContentsColor (r_viewleaf->contents);
+	V_CalcBlend ();
+
+	// johnfitz -- calculate r_fovx and r_fovy here
+	r_fovx = r_refdef.fov_x;
+	r_fovy = r_refdef.fov_y;
+
+	{
+		int contents = Mod_PointInLeaf (r_origin, cl.worldmodel)->contents;
+
+		rt_lavaeffects = false;
+
+		if (contents == CONTENTS_WATER)
+		{
+			rt_cameramedia = RG_MEDIA_TYPE_WATER;
+		}
+		else if (contents == CONTENTS_LAVA)
+		{
+			rt_cameramedia = RG_MEDIA_TYPE_WATER;
+			rt_lavaeffects = true;
+		}
+		else if (contents == CONTENTS_SLIME)
+		{
+			rt_cameramedia = RG_MEDIA_TYPE_ACID;
+		}
+		else
+		{
+			rt_cameramedia = RG_MEDIA_TYPE_VACUUM;
+		}
+
+		if (rt_cameramedia != RG_MEDIA_TYPE_VACUUM && CVAR_TO_INT32 (r_waterwarp) == 2)
+		{
+			// variance is a percentage of width, where width = 2 * tan(fov / 2)
+			r_fovx = atan (tan (DEG2RAD (r_refdef.fov_x) / 2) * (0.97 + sin (cl.time * 1.5) * 0.03)) * 2 / M_PI_DIV_180;
+			r_fovy = atan (tan (DEG2RAD (r_refdef.fov_y) / 2) * (1.03 - sin (cl.time * 1.5) * 0.03)) * 2 / M_PI_DIV_180;
+		}
+	}
+	// johnfitz
+
+	R_SetFrustum (r_fovx, r_fovy); // johnfitz -- use r_fov* vars
+	RT_R_SetupMatrices ();
+
+	// johnfitz -- cheat-protect some draw modes
+	r_fullbright_cheatsafe = false;
+	r_lightmap_cheatsafe = false;
+	r_drawworld_cheatsafe = true;
+	if (cl.maxclients == 1)
+	{
+		if (!r_drawworld.value)
+			r_drawworld_cheatsafe = false;
+		if (r_lightmap.value)
+			r_lightmap_cheatsafe = true;
+		else if (r_fullbright.value)
+			r_fullbright_cheatsafe = true;
+	}
+	if (!cl.worldmodel->lightdata)
+	{
+		r_fullbright_cheatsafe = true;
+		r_lightmap_cheatsafe = false;
+	}
+	// johnfitz
+
+	// rebuild the Q2RTX per-cluster light lists from scratch this frame
+	RT_ClusterLightListsReset ();
+
+	RT_UploadAllDlights ();
+}
+
+/*
+=============
+RT_R_DrawEntitiesOnList
+=============
+*/
+static void RT_R_DrawEntitiesOnList (rt_cb_context_t *cbx, qboolean alphapass, int chain, int startedict, int endedict)
+{
+	int i;
+
+	if (!r_drawentities.value)
+		return;
+
+	for (i = startedict; i < endedict; ++i)
+	{
+		entity_t *currententity = cl_visedicts[i];
+
+		// johnfitz -- if alphapass is true, draw only alpha entites this time
+		// if alphapass is false, draw only nonalpha entities this time
+		if ((ENTALPHA_DECODE (currententity->alpha) < 1 && !alphapass) || (ENTALPHA_DECODE (currententity->alpha) == 1 && alphapass))
+			continue;
+
+		// johnfitz -- chasecam
+		if (currententity == &cl.entities[cl.viewentity])
+			currententity->angles[0] *= 0.3;
+		// johnfitz
+
+		// spike -- this would be more efficient elsewhere, but its more correct here.
+		if (currententity->eflags & EFLAGS_EXTERIORMODEL)
+			continue;
+
+		// model failed to load (e.g. unsupported MD3 from an HD pack) -- skip
+		if (!currententity->model)
+			continue;
+
+		switch (currententity->model->type)
+		{
+		case mod_alias:
+			RT_DrawAliasModel (cbx, currententity, i);
+			break;
+		case mod_brush:
+			RT_DrawBrushModel (cbx, currententity, chain, i);
+			break;
+		case mod_sprite:
+			RT_DrawSpriteModel (cbx, currententity, i);
+			break;
+		}
+	}
+}
+
+/*
+=============
+RT_R_DrawViewModel -- johnfitz -- gutted
+=============
+*/
+static void RT_R_DrawViewModel (rt_cb_context_t *cbx)
+{
+	if (!r_drawviewmodel.value || !r_drawentities.value || chase_active.value)
+		return;
+
+	if (cl.stats[STAT_HEALTH] <= 0)
+		return;
+
+	entity_t *currententity = &cl.viewent;
+	if (!currententity->model)
+		return;
+
+	// johnfitz -- this fixes a crash
+	if (currententity->model->type != mod_alias)
+		return;
+	// johnfitz
+
+	RT_DrawAliasModel (cbx, currententity, ENT_UNIQUEID_VIEWMODEL);
+}
+
+/*
+================
+RT_R_EmitWirePoint -- johnfitz -- draws a wireframe cross shape for point entities
+================
+*/
+static void RT_R_EmitWirePoint (rt_cb_context_t *cbx, vec3_t origin)
+{
+	const int size = 8;
+
+	RgVertex vertices[6] = {0};
+
+	vertices[0].position[0] = origin[0] - size;
+	vertices[0].position[1] = origin[1];
+	vertices[0].position[2] = origin[2];
+	vertices[1].position[0] = origin[0] + size;
+	vertices[1].position[1] = origin[1];
+	vertices[1].position[2] = origin[2];
+	vertices[2].position[0] = origin[0];
+	vertices[2].position[1] = origin[1] - size;
+	vertices[2].position[2] = origin[2];
+	vertices[3].position[0] = origin[0];
+	vertices[3].position[1] = origin[1] + size;
+	vertices[3].position[2] = origin[2];
+	vertices[4].position[0] = origin[0];
+	vertices[4].position[1] = origin[1];
+	vertices[4].position[2] = origin[2] - size;
+	vertices[5].position[0] = origin[0];
+	vertices[5].position[1] = origin[1];
+	vertices[5].position[2] = origin[2] + size;
+
+	for (int i = 0; i < (int)countof (vertices); i++)
+	{
+		vertices[i].packedColor = RT_PACKED_COLOR_WHITE;
+	}
+
+	RgRasterizedGeometryUploadInfo info = {
+		.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_DEFAULT,
+		.vertexCount = countof (vertices),
+		.pVertices = vertices,
+		.indexCount = 0,
+		.pIndices = NULL,
+		.transform = RT_TRANSFORM_IDENTITY,
+		.color = RT_COLOR_WHITE,
+		.material = RG_NO_MATERIAL,
+		.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_FORCE_LINE_LIST,
+		.blendFuncSrc = 0,
+		.blendFuncDst = 0,
+	};
+
+	RgResult r = rgUploadRasterizedGeometry (vulkan_globals_rt.instance, &info, NULL, NULL);
+	RG_CHECK (r);
+}
+
+/*
+================
+RT_R_EmitWireBox -- johnfitz -- draws one axis aligned bounding box
+================
+*/
+static void RT_R_EmitWireBox (rt_cb_context_t *cbx, vec3_t mins, vec3_t maxs)
+{
+	const static uint32_t box_indices[24] = {0, 1, 2, 3, 4, 5, 6, 7, 0, 4, 1, 5, 2, 6, 3, 7, 0, 2, 1, 3, 4, 6, 5, 7};
+
+	RgVertex vertices[8] = {0};
+
+	for (int i = 0; i < 8; ++i)
+	{
+		vertices[i].position[0] = ((i % 2) < 1) ? mins[0] : maxs[0];
+		vertices[i].position[1] = ((i % 4) < 2) ? mins[1] : maxs[1];
+		vertices[i].position[2] = ((i % 8) < 4) ? mins[2] : maxs[2];
+		vertices[i].packedColor = RT_PACKED_COLOR_WHITE;
+	}
+
+	RgRasterizedGeometryUploadInfo info = {
+		.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_DEFAULT,
+		.vertexCount = countof (vertices),
+		.pVertices = vertices,
+		.indexCount = countof (box_indices),
+		.pIndices = box_indices,
+		.transform = RT_TRANSFORM_IDENTITY,
+		.color = RT_COLOR_WHITE,
+		.material = RG_NO_MATERIAL,
+		.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_FORCE_LINE_LIST,
+		.blendFuncSrc = 0,
+		.blendFuncDst = 0,
+	};
+
+	RgResult r = rgUploadRasterizedGeometry (vulkan_globals_rt.instance, &info, NULL, NULL);
+	RG_CHECK (r);
+}
+
+/*
+================
+RT_R_ShowBoundingBoxes -- johnfitz
+================
+*/
+static void RT_R_ShowBoundingBoxes (rt_cb_context_t *cbx)
+{
+	extern edict_t *sv_player;
+	vec3_t          mins, maxs;
+	edict_t        *ed;
+	int             i;
+
+	if (!r_showbboxes.value || cl.maxclients > 1 || !r_drawentities.value || !sv.active)
+		return;
+
+	PR_SwitchQCVM (&sv.qcvm);
+	for (i = 0, ed = NEXT_EDICT (qcvm->edicts); i < qcvm->num_edicts; i++, ed = NEXT_EDICT (ed))
+	{
+		if (ed == sv_player)
+			continue; // don't draw player's own bbox
+
+		if (ed->v.mins[0] == ed->v.maxs[0] && ed->v.mins[1] == ed->v.maxs[1] && ed->v.mins[2] == ed->v.maxs[2])
+		{
+			// point entity
+			RT_R_EmitWirePoint (cbx, ed->v.origin);
+		}
+		else
+		{
+			// box entity
+			VectorAdd (ed->v.mins, ed->v.origin, mins);
+			VectorAdd (ed->v.maxs, ed->v.origin, maxs);
+			RT_R_EmitWireBox (cbx, mins, maxs);
+		}
+	}
+	PR_SwitchQCVM (NULL);
+}
+
+/*
+================
+RT_R_ShowTris -- johnfitz
+================
+*/
+static void RT_R_ShowTris (rt_cb_context_t *cbx)
+{
+	if (r_showtris.value < 1 || r_showtris.value > 2 || cl.maxclients > 1)
+		return;
+
+	if (r_drawworld.value)
+		RT_DrawWorld_ShowTris (cbx);
+}
+
+/*
+================
+RT_R_DrawWorldTask
+================
+*/
+static void RT_R_DrawWorldTask (int index, void *unused)
+{
+	if (!Atomic_LoadUInt32 (&rt_require_static_submit))
+	{
+		return;
+	}
+
+	RgResult r;
+
+	r = rgBeginStaticGeometries (vulkan_globals_rt.instance);
+	RG_CHECK (r);
+
+	const int       cbx_index = index + RT_CBX_WORLD_0;
+	rt_cb_context_t *cbx = &vulkan_globals_rt.secondary_cb_contexts[cbx_index];
+	RT_R_SetupContext (cbx);
+	RT_DrawWorld (cbx, index);
+
+	r = rgSubmitStaticGeometries (vulkan_globals_rt.instance);
+	RG_CHECK (r);
+
+	Atomic_StoreUInt32 (&rt_require_static_submit, false);
+}
+
+/*
+================
+RT_R_DrawSkyAndWaterTask
+================
+*/
+static void RT_R_DrawSkyAndWaterTask (void *unused)
+{
+	rt_cb_context_t *cbx = &vulkan_globals_rt.secondary_cb_contexts[RT_CBX_SKY_AND_WATER];
+	RT_R_SetupContext (cbx);
+	Sky_DrawSky_RT (cbx);
+	RT_DrawWorld_Water (cbx);
+}
+
+/*
+================
+RT_R_DrawEntitiesTask
+================
+*/
+static void RT_R_DrawEntitiesTask (int index, void *unused)
+{
+	const int       cbx_index = index + RT_CBX_ENTITIES_0;
+	rt_cb_context_t *cbx = &vulkan_globals_rt.secondary_cb_contexts[cbx_index];
+	RT_R_SetupContext (cbx);
+	const int num_edicts_per_cb = (cl_numvisedicts + NUM_ENTITIES_CBX - 1) / NUM_ENTITIES_CBX;
+	int       startedict = index * num_edicts_per_cb;
+	int       endedict = q_min ((index + 1) * num_edicts_per_cb, cl_numvisedicts);
+	RT_R_DrawEntitiesOnList (cbx, false, index + chain_model_0, startedict, endedict);
+}
+
+/*
+================
+RT_R_DrawAlphaEntitiesTask
+================
+*/
+static void RT_R_DrawAlphaEntitiesTask (void *unused)
+{
+	rt_cb_context_t *cbx = &vulkan_globals_rt.secondary_cb_contexts[RT_CBX_ALPHA_ENTITIES];
+	RT_R_SetupContext (cbx);
+	RT_R_DrawEntitiesOnList (cbx, true, chain_alpha_model, 0, cl_numvisedicts);
+}
+
+/*
+================
+RT_R_DrawParticlesTask
+================
+*/
+static void RT_R_DrawParticlesTask (void *unused)
+{
+	rt_cb_context_t *cbx = &vulkan_globals_rt.secondary_cb_contexts[RT_CBX_PARTICLES];
+	RT_R_SetupContext (cbx);
+	RT_DrawParticles (cbx);
+}
+
+/*
+================
+RT_R_DrawViewModelTask
+================
+*/
+static void RT_R_DrawViewModelTask (void *unused)
+{
+	rt_cb_context_t *cbx = &vulkan_globals_rt.secondary_cb_contexts[RT_CBX_VIEW_MODEL];
+	RT_R_SetupContext (cbx);
+	RT_R_DrawViewModel (cbx);          // johnfitz -- moved here from R_RenderView
+	RT_R_ShowTris (cbx);               // johnfitz
+	RT_R_ShowBoundingBoxes (cbx);      // johnfitz
+	RT_UploadAllElights ();            // RT
+	RT_UploadAllWorldModelLights ();   // RT
+	RT_UploadAllTeleports ();          // RT
+
+	// all RT lights are uploaded and registered - build + upload the
+	// per-cluster light lists for this frame
+	RT_ClusterLightListsUpload ();     // RT
+}
+
+/*
+================
+RT_R_RenderView
+================
+*/
+static void R_SetupViewBeforeMark (void *unused);
+static void RT_R_RenderView (qboolean use_tasks, task_handle_t begin_rendering_task, task_handle_t setup_frame_task, task_handle_t draw_done_task)
+{
+	double time1, time2;
+
+	time1 = 0; /* avoid compiler warning */
+	if (scr_speeds.value)
+	{
+		time1 = Sys_DoubleTime ();
+
+		// johnfitz -- rendering statistics
+		Atomic_StoreUInt32 (&rs_brushpolys, 0u);
+		Atomic_StoreUInt32 (&rs_aliaspolys, 0u);
+		Atomic_StoreUInt32 (&rs_skypolys, 0u);
+		Atomic_StoreUInt32 (&rs_particles, 0u);
+		Atomic_StoreUInt32 (&rs_fogpolys, 0u);
+		Atomic_StoreUInt32 (&rs_dynamiclightmaps, 0u);
+		Atomic_StoreUInt32 (&rs_aliaspasses, 0u);
+		Atomic_StoreUInt32 (&rs_brushpasses, 0u);
+	}
+
+	if (use_tasks)
+	{
+		task_handle_t before_mark = Task_AllocateAndAssignFunc (R_SetupViewBeforeMark, NULL, 0);
+		Task_AddDependency (setup_frame_task, before_mark);
+
+		task_handle_t store_efrags = INVALID_TASK_HANDLE;
+		task_handle_t cull_surfaces = INVALID_TASK_HANDLE;
+		task_handle_t chain_surfaces = INVALID_TASK_HANDLE;
+		R_MarkSurfaces (use_tasks, before_mark, &store_efrags, &cull_surfaces, &chain_surfaces);
+
+		task_handle_t draw_world_task = Task_AllocateAndAssignIndexedFunc (RT_R_DrawWorldTask, NUM_WORLD_CBX, NULL, 0);
+		Task_AddDependency (chain_surfaces, draw_world_task);
+		Task_AddDependency (begin_rendering_task, draw_world_task);
+		Task_AddDependency (draw_world_task, draw_done_task);
+
+		task_handle_t draw_sky_and_water_task = Task_AllocateAndAssignFunc (RT_R_DrawSkyAndWaterTask, NULL, 0);
+		Task_AddDependency (store_efrags, draw_sky_and_water_task);
+		Task_AddDependency (chain_surfaces, draw_sky_and_water_task);
+		Task_AddDependency (begin_rendering_task, draw_sky_and_water_task);
+		Task_AddDependency (draw_sky_and_water_task, draw_done_task);
+
+		task_handle_t draw_view_model_task = Task_AllocateAndAssignFunc (RT_R_DrawViewModelTask, NULL, 0);
+		Task_AddDependency (before_mark, draw_view_model_task);
+		Task_AddDependency (begin_rendering_task, draw_view_model_task);
+		Task_AddDependency (draw_view_model_task, draw_done_task);
+
+		task_handle_t draw_entities_task = Task_AllocateAndAssignIndexedFunc (RT_R_DrawEntitiesTask, NUM_ENTITIES_CBX, NULL, 0);
+		Task_AddDependency (store_efrags, draw_entities_task);
+		Task_AddDependency (begin_rendering_task, draw_entities_task);
+		Task_AddDependency (draw_entities_task, draw_done_task);
+
+		task_handle_t draw_alpha_entities_task = Task_AllocateAndAssignFunc (RT_R_DrawAlphaEntitiesTask, NULL, 0);
+		Task_AddDependency (store_efrags, draw_alpha_entities_task);
+		Task_AddDependency (begin_rendering_task, draw_alpha_entities_task);
+		Task_AddDependency (draw_alpha_entities_task, draw_done_task);
+
+		task_handle_t draw_particles_task = Task_AllocateAndAssignFunc (RT_R_DrawParticlesTask, NULL, 0);
+		Task_AddDependency (before_mark, draw_particles_task);
+		Task_AddDependency (begin_rendering_task, draw_particles_task);
+		Task_AddDependency (draw_particles_task, draw_done_task);
+
+		task_handle_t tasks[] = {before_mark, store_efrags, draw_world_task, draw_sky_and_water_task, draw_view_model_task,
+								 draw_entities_task, draw_alpha_entities_task, draw_particles_task};
+		Tasks_Submit ((sizeof (tasks) / sizeof (task_handle_t)), tasks);
+		if (cull_surfaces != chain_surfaces)
+		{
+			Task_Submit (cull_surfaces);
+			Task_Submit (chain_surfaces);
+		}
+	}
+	else
+	{
+		R_SetupViewBeforeMark (NULL);
+		R_MarkSurfaces (use_tasks, INVALID_TASK_HANDLE, NULL, NULL, NULL); // johnfitz -- create texture chains from PVS
+		RT_R_DrawWorldTask (0, NULL);
+		RT_R_DrawSkyAndWaterTask (NULL);
+		RT_R_DrawViewModelTask (NULL);
+		RT_R_DrawEntitiesTask (0, NULL);
+		RT_R_DrawAlphaEntitiesTask (NULL);
+		RT_R_DrawParticlesTask (NULL);
+	}
+
+	if (scr_speeds.value)
+	{
+		time2 = Sys_DoubleTime ();
+		rs_cputime_us = (uint32_t)((time2 - time1) * 1000000.0);
+	}
+}
+
 static void R_PrepareDebugEntityInfo (void);
 
 /*
@@ -403,6 +1044,13 @@ R_SetupViewBeforeMark
 */
 static void R_SetupViewBeforeMark (void *unused)
 {
+	// q2rtx: RT renderer path
+	if (CVAR_TO_BOOL (rt_renderer))
+	{
+		RT_R_SetupViewBeforeMark ();
+		return;
+	}
+
 	// must happen here: in indirect mode draw_world only depends on this task, latching
 	// bmodel_instances_index any later would race the read in R_DrawIndirectBrushes
 	if (indirect)
@@ -1547,6 +2195,13 @@ void R_RenderView (
 	qboolean use_tasks, task_handle_t begin_rendering_task, task_handle_t setup_frame_task, task_handle_t draw_done_task, task_handle_t draw_gui_task)
 {
 	static qboolean stats_ready;
+
+	// q2rtx: RT renderer path
+	if (CVAR_TO_BOOL (rt_renderer))
+	{
+		RT_R_RenderView (use_tasks, begin_rendering_task, setup_frame_task, draw_done_task);
+		return;
+	}
 
 	indirect = r_indirect.value && indirect_ready && r_gpulightmapupdate.value && !scr_speeds.value;
 

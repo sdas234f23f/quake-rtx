@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 #include "quakedef.h"
+#include "gl_heap.h"
 
 // default max # of particles at one time
 #define MAX_PARTICLES 16384
@@ -1022,6 +1023,149 @@ static void R_DrawParticlesFaces (cb_context_t *cbx)
 	}
 	else
 		vulkan_globals.vk_cmd_draw (cbx->cb, num_particles * 3, 1, 0, 0);
+}
+
+/*
+===============
+RT_DrawParticles
+
+RT renderer version of R_DrawParticlesFaces: builds RgVertex quads/tris and
+uploads them as rasterized geometry.
+===============
+*/
+static void RT_DrawParticlesFaces (rt_cb_context_t *cbx)
+{
+	particle_t	 *p;
+	float		  scale, texcoord_scale;
+	vec3_t		  up, right, up_right, p_up, p_right, p_up_right;
+	extern cvar_t r_particles; // johnfitz
+
+	if (!r_particles.value)
+		return;
+
+	if (!active_particles)
+		return;
+
+	if (r_quadparticles.value)
+	{
+		VectorScale (vup, 0.75, up);
+		VectorScale (vright, 0.75, right);
+		texcoord_scale = 0.5f;
+	}
+	else
+	{
+		VectorScale (vup, 1.5, up);
+		VectorScale (vright, 1.5, right);
+		texcoord_scale = 1.0f;
+	}
+
+	for (int i = 0; i < 3; ++i)
+		up_right[i] = up[i] + right[i];
+
+	int num_particles = 0;
+	for (p = active_particles; p; p = p->next)
+		num_particles += 1;
+
+	RgVertex *vertices;
+	if (r_quadparticles.value)
+		vertices = RT_AllocScratchMemoryNulled (num_particles * 4 * sizeof (RgVertex));
+	else
+		vertices = RT_AllocScratchMemoryNulled (num_particles * 3 * sizeof (RgVertex));
+
+	uint32_t *quadindices = NULL;
+	if (r_quadparticles.value)
+	{
+		quadindices = RT_AllocScratchMemory (num_particles * 6 * sizeof (uint32_t));
+		for (int i = 0; i < num_particles; i++)
+		{
+			quadindices[i * 6 + 0] = i * 4 + 0;
+			quadindices[i * 6 + 1] = i * 4 + 1;
+			quadindices[i * 6 + 2] = i * 4 + 2;
+			quadindices[i * 6 + 3] = i * 4 + 0;
+			quadindices[i * 6 + 4] = i * 4 + 2;
+			quadindices[i * 6 + 5] = i * 4 + 3;
+		}
+	}
+
+	int current_vertex = 0;
+	for (p = active_particles; p; p = p->next)
+	{
+		// hack a scale up to keep particles from disapearing
+		scale = (p->org[0] - r_origin[0]) * vpn[0] + (p->org[1] - r_origin[1]) * vpn[1] + (p->org[2] - r_origin[2]) * vpn[2];
+		if (scale < 20)
+			scale = 1 + 0.08; // johnfitz -- added .08 to be consistent
+		else
+			scale = 1 + scale * 0.004;
+
+		byte *c = (byte *)&d_8to24table[(int)p->color];
+
+		vertices[current_vertex].position[0] = p->org[0];
+		vertices[current_vertex].position[1] = p->org[1];
+		vertices[current_vertex].position[2] = p->org[2];
+		vertices[current_vertex].texCoord[0] = 0.0f;
+		vertices[current_vertex].texCoord[1] = 0.0f;
+		vertices[current_vertex].packedColor = RT_PackColorToUint32 (c[0], c[1], c[2], 255);
+		current_vertex++;
+
+		VectorMA (p->org, scale, up, p_up);
+		vertices[current_vertex].position[0] = p_up[0];
+		vertices[current_vertex].position[1] = p_up[1];
+		vertices[current_vertex].position[2] = p_up[2];
+		vertices[current_vertex].texCoord[0] = texcoord_scale;
+		vertices[current_vertex].texCoord[1] = 0.0f;
+		vertices[current_vertex].packedColor = RT_PackColorToUint32 (c[0], c[1], c[2], 255);
+		current_vertex++;
+
+		if (r_quadparticles.value)
+		{
+			VectorMA (p->org, scale, up_right, p_up_right);
+			vertices[current_vertex].position[0] = p_up_right[0];
+			vertices[current_vertex].position[1] = p_up_right[1];
+			vertices[current_vertex].position[2] = p_up_right[2];
+			vertices[current_vertex].texCoord[0] = texcoord_scale;
+			vertices[current_vertex].texCoord[1] = texcoord_scale;
+			vertices[current_vertex].packedColor = RT_PackColorToUint32 (c[0], c[1], c[2], 255);
+			current_vertex++;
+		}
+
+		VectorMA (p->org, scale, right, p_right);
+		vertices[current_vertex].position[0] = p_right[0];
+		vertices[current_vertex].position[1] = p_right[1];
+		vertices[current_vertex].position[2] = p_right[2];
+		vertices[current_vertex].texCoord[0] = 0.0f;
+		vertices[current_vertex].texCoord[1] = texcoord_scale;
+		vertices[current_vertex].packedColor = RT_PackColorToUint32 (c[0], c[1], c[2], 255);
+		current_vertex++;
+
+		Atomic_IncrementUInt32 (&rs_particles);
+	}
+
+	RgRasterizedGeometryUploadInfo info = {
+		.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_DEFAULT,
+		.vertexCount = current_vertex,
+		.pVertices = vertices,
+		.indexCount = r_quadparticles.value ? num_particles * 6 : 0,
+		.pIndices = r_quadparticles.value ? quadindices : NULL,
+		.transform = RT_TRANSFORM_IDENTITY,
+		.color = RT_COLOR_WHITE,
+		.material = particletexture ? particletexture->rtmaterial : RG_NO_MATERIAL,
+		.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_BLEND_ENABLE | RG_RASTERIZED_GEOMETRY_STATE_DEPTH_TEST,
+		.blendFuncSrc = RG_BLEND_FACTOR_SRC_ALPHA,
+		.blendFuncDst = RG_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+	};
+
+	RgResult r = rgUploadRasterizedGeometry (vulkan_globals_rt.instance, &info, NULL, NULL);
+	RG_CHECK (r);
+}
+
+/*
+===============
+RT_DrawParticles
+===============
+*/
+void RT_DrawParticles (rt_cb_context_t *cbx)
+{
+	RT_DrawParticlesFaces (cbx);
 }
 
 /*

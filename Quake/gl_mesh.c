@@ -350,6 +350,64 @@ void GLMesh_UploadBuffers (
 	if (!hdr)
 		return;
 
+	// q2rtx: build the RT renderer's pose vertex + index arrays for classic
+	// MDL models (the ray tracer samples them per pose).
+	if (CVAR_TO_BOOL (rt_renderer) && (hdr->poseverttype == PV_QUAKE1 || hdr->poseverttype == PV_QUAKE3))
+	{
+		if (mod->rtvertices)
+		{
+			Mem_Free (mod->rtvertices);
+			mod->rtvertices = NULL;
+		}
+		if (mod->rtindices)
+		{
+			Mem_Free (mod->rtindices);
+			mod->rtindices = NULL;
+		}
+
+		// 32-bit index buffer, reversed winding
+		mod->rtindices = Mem_Alloc (hdr->numindexes * sizeof (uint32_t));
+		assert (hdr->numindexes % 3 == 0);
+		for (int k = 0; k < hdr->numindexes / 3; k++)
+		{
+			mod->rtindices[k * 3 + 0] = indexes[k * 3 + 2];
+			mod->rtindices[k * 3 + 1] = indexes[k * 3 + 1];
+			mod->rtindices[k * 3 + 2] = indexes[k * 3 + 0];
+		}
+
+		// per-pose RgVertex array
+		const int numposes = (hdr->poseverttype == PV_QUAKE1) ? hdr->numposes : hdr->numframes;
+		mod->rtvertices = Mem_Alloc (numposes * hdr->numverts_vbo * sizeof (RgVertex));
+		memset (mod->rtvertices, 0, numposes * hdr->numverts_vbo * sizeof (RgVertex));
+
+		const trivertx_t *trivertexes = (const trivertx_t *)vertexes;
+
+		for (int f = 0; f < numposes; f++)
+		{
+			RgVertex *dstpose = mod->rtvertices + (hdr->numverts_vbo * f);
+			const trivertx_t *srctv = trivertexes + (hdr->numverts * f);
+
+			for (int v = 0; v < hdr->numverts_vbo; v++)
+			{
+				trivertx_t trivert = srctv[desc[v].vertindex];
+
+				dstpose[v].position[0] = trivert.v[0];
+				dstpose[v].position[1] = trivert.v[1];
+				dstpose[v].position[2] = trivert.v[2];
+
+				dstpose[v].normal[0] = r_avertexnormals[trivert.lightnormalindex][0];
+				dstpose[v].normal[1] = r_avertexnormals[trivert.lightnormalindex][1];
+				dstpose[v].normal[2] = r_avertexnormals[trivert.lightnormalindex][2];
+
+				// texCoord is same in all poses
+				dstpose[v].texCoord[0] = ((float)desc[v].st[0] + 0.5f) / (float)hdr->skinwidth;
+				dstpose[v].texCoord[1] = ((float)desc[v].st[1] + 0.5f) / (float)hdr->skinheight;
+
+				dstpose[v].packedColor = RT_PACKED_COLOR_WHITE;
+			}
+		}
+	}
+
 	// count how much space we're going to need.
 	int totalvbosize = 0;
 

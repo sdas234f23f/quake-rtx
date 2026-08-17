@@ -843,6 +843,83 @@ qboolean R_IndirectBrush (entity_t *e)
 
 /*
 =================
+RT_DrawBrushModel
+
+RT renderer version of R_DrawBrushModel: chains the model surfaces and
+uploads them through the RT batch machinery.
+=================
+*/
+void RT_DrawBrushModel (rt_cb_context_t *cbx, entity_t *e, int chain, int entuniqueid)
+{
+	int         i, k;
+	msurface_t *psurf;
+	float       dot;
+	mplane_t   *pplane;
+	qmodel_t   *clmodel;
+	vec3_t      modelorg;
+
+	extern cvar_t rt_enable_pvs;
+
+	if (CVAR_TO_BOOL (rt_enable_pvs))
+	{
+		if (R_CullModelForEntity (e))
+			return;
+	}
+
+	clmodel = e->model;
+
+	if (CVAR_TO_BOOL (rt_enable_pvs))
+	{
+		VectorSubtract (r_refdef.vieworg, e->origin, modelorg);
+		if (e->angles[0] || e->angles[1] || e->angles[2])
+		{
+			vec3_t temp;
+			vec3_t forward, right, up;
+
+			VectorCopy (modelorg, temp);
+			AngleVectors (e->angles, forward, right, up);
+			modelorg[0] = DotProduct (temp, forward);
+			modelorg[1] = -DotProduct (temp, right);
+			modelorg[2] = DotProduct (temp, up);
+		}
+	}
+
+	psurf = &clmodel->surfaces[clmodel->firstmodelsurface];
+
+	// calculate dynamic lighting for bmodel if it's not an
+	// instanced model
+	if (clmodel->firstmodelsurface != 0)
+	{
+		for (k = 0; k < MAX_DLIGHTS; k++)
+		{
+			if ((cl_dlights[k].die < cl.time) || (!cl_dlights[k].radius))
+				continue;
+
+			R_MarkLights (&cl_dlights[k], k, clmodel->nodes + clmodel->hulls[0].firstclipnode);
+		}
+	}
+
+	R_ClearTextureChains (clmodel, chain);
+	for (i = 0; i < clmodel->nummodelsurfaces; i++, psurf++)
+	{
+		if (CVAR_TO_BOOL (rt_enable_pvs))
+		{
+			pplane = psurf->plane;
+			dot = DotProduct (modelorg, pplane->normal) - pplane->dist;
+			if ((!(psurf->flags & SURF_PLANEBACK) || dot >= -BACKFACE_EPSILON) && (psurf->flags & SURF_PLANEBACK || dot <= BACKFACE_EPSILON))
+				continue;
+		}
+
+		R_ChainSurface (psurf, chain);
+		Atomic_IncrementUInt32 (&rs_brushpolys);
+	}
+
+	RT_DrawTextureChains (cbx, clmodel, e, chain, entuniqueid);
+	RT_DrawTextureChains_Water (cbx, clmodel, e, chain, entuniqueid);
+}
+
+/*
+=================
 R_DrawBrushModel
 =================
 */

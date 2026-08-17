@@ -166,6 +166,477 @@ void RT_ClusterLightListsUpload (void)
 	RG_CHECK (r);
 }
 
+// ============================================================================
+// q2rtx: parsing + uploading of static entity lights ("elights")
+// ============================================================================
+
+extern cvar_t rt_elight_normaliz, rt_elight_default, rt_elight_default_mdl, rt_elight_radius, rt_elight_threshold;
+extern cvar_t rt_poi_trigger, rt_poi_func, rt_poi_weapon, rt_poi_pwrup, rt_poi_armor, rt_poi_key, rt_poi_health, rt_poi_ammo;
+extern cvar_t rt_poi_distthresh, rt_poi_distthresh_super;
+
+static qboolean StartsWith (const char *val, const char *begin)
+{
+	return strncmp (val, begin, strlen (begin)) == 0;
+}
+
+// look https://www.gamers.org/dEngine/quake/QDP/qmapspec.html#2.3.1
+// for classnames
+
+static qboolean IsClassname_Light (const char *classname)
+{
+	return StartsWith (classname, "light");
+}
+
+static qboolean IsClassname_LightWithModel (const char *classname)
+{
+	// For example,
+	//    "light_fluoro"
+	//    "light_fluorospark"
+	//    "light_globe"
+	//    "light_torch_small_walltorch"
+	//    "light_flame_small_yellow"
+	//    "light_flame_large_yellow"
+	//    "light_flame_small_white"
+	// but not just "light"
+
+	return StartsWith (classname, "light_");
+}
+
+static qboolean IsClassname_Offsetted (const char *classname)
+{
+	// to prevent light source being inside the flame model
+	return strcmp (classname, "light_torch_small_walltorch") == 0;
+}
+
+static qboolean IsClassname_PointOfInterest (const char *classname, qboolean *out_superimportant)
+{
+	if (CVAR_TO_BOOL (rt_poi_trigger))
+	{
+		if (StartsWith (classname, "trigger") || strcmp (classname, "info_teleport_destination") == 0)
+		{
+			*out_superimportant = true;
+			return true;
+		}
+	}
+
+	if (CVAR_TO_BOOL (rt_poi_func))
+	{
+		if (StartsWith (classname, "func"))
+		{
+			*out_superimportant = true;
+			return true;
+		}
+	}
+
+	if (CVAR_TO_BOOL (rt_poi_weapon))
+	{
+		if (strcmp (classname, "item_weapon") == 0 ||
+			StartsWith (classname, "weapon"))
+		{
+			return true;
+		}
+	}
+
+	if (StartsWith (classname, "item"))
+	{
+		if (CVAR_TO_BOOL (rt_poi_pwrup))
+		{
+			if (StartsWith (classname, "item_artifact"))
+			{
+				return true;
+			}
+		}
+
+		if (CVAR_TO_BOOL (rt_poi_armor))
+		{
+			if (StartsWith (classname, "item_armor"))
+			{
+				return true;
+			}
+		}
+
+		if (CVAR_TO_BOOL (rt_poi_key))
+		{
+			if (strcmp (classname, "item_sigil") == 0 ||
+				StartsWith (classname, "item_key"))
+			{
+				*out_superimportant = true;
+				return true;
+			}
+		}
+
+		if (CVAR_TO_BOOL (rt_poi_ammo))
+		{
+			if (strcmp (classname, "item_cells") == 0 ||
+				strcmp (classname, "item_rockets") == 0 ||
+				strcmp (classname, "item_shells") == 0 ||
+				strcmp (classname, "item_spikes") == 0)
+			{
+				return true;
+			}
+		}
+
+		if (CVAR_TO_BOOL (rt_poi_health))
+		{
+			if (strcmp (classname, "item_health") == 0)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+typedef struct rt_poi_s
+{
+	vec3_t   origin;
+	qboolean is_super_imporant;
+} rt_poi_t;
+
+rt_poi_t *rt_poi = NULL;
+int       rt_poi_count = 0;
+int       rt_poi_allocated = 0;
+
+static void RT_ParsePointsOfInterest ()
+{
+	rt_poi_count = 0;
+
+	char key[128], value[4096];
+
+	if (!cl.worldmodel)
+	{
+		return;
+	}
+
+	const char *data = cl.worldmodel->entities;
+	if (!data)
+	{
+		return;
+	}
+
+	rt_poi_t cur_values = {0};
+	int      cur_state = 0;
+
+#define CUR_STRUCT_STARTED 1
+#define CUR_IS_POI         2
+#define CUR_FOUND_ORIGIN   4
+
+	while (1)
+	{
+		data = COM_Parse (data);
+		if (!data)
+			return; // error
+
+		if (com_token[0] == '{')
+		{
+			memset (&cur_values, 0, sizeof (cur_values));
+			cur_state = CUR_STRUCT_STARTED;
+			continue;
+		}
+		else if (com_token[0] == '}')
+		{
+			if ((cur_state & CUR_STRUCT_STARTED) &&
+				(cur_state & CUR_IS_POI) &&
+				(cur_state & CUR_FOUND_ORIGIN))
+			{
+				if (rt_poi_count >= rt_poi_allocated)
+				{
+					rt_poi_allocated += 256;
+					rt_poi = Mem_Realloc (rt_poi, sizeof (rt_poi_t) * rt_poi_allocated);
+				}
+
+				rt_poi[rt_poi_count] = cur_values;
+				rt_poi_count++;
+			}
+
+			cur_state = 0; // end of struct
+			continue;
+		}
+
+		if (com_token[0] == '_')
+			q_strlcpy (key, com_token + 1, sizeof (key));
+		else
+			q_strlcpy (key, com_token, sizeof (key));
+		while (key[0] && key[strlen (key) - 1] == ' ') // remove trailing spaces
+			key[strlen (key) - 1] = 0;
+		data = COM_Parse (data);
+		if (!data)
+			return; // error
+		q_strlcpy (value, com_token, sizeof (value));
+
+		if (strcmp (key, "classname") == 0)
+		{
+			qboolean is_super = 0;
+
+			if (IsClassname_PointOfInterest (value, &is_super))
+			{
+				cur_state |= CUR_IS_POI;
+				cur_values.is_super_imporant = is_super;
+			}
+		}
+		else if (strcmp (key, "origin") == 0)
+		{
+			vec3_t tmpvec;
+			int    components = sscanf (value, "%f %f %f", &tmpvec[0], &tmpvec[1], &tmpvec[2]);
+
+			if (components == 3)
+			{
+				cur_values.origin[0] = tmpvec[0];
+				cur_values.origin[1] = tmpvec[1];
+				cur_values.origin[2] = tmpvec[2];
+				cur_state |= CUR_FOUND_ORIGIN;
+			}
+		}
+	}
+}
+
+static qboolean IsAroundPOI (vec3_t origin)
+{
+	float threshold = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_poi_distthresh));
+	float threshold_loose = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_poi_distthresh_super));
+
+	threshold *= threshold;
+	threshold_loose *= threshold_loose;
+
+	for (int i = 0; i < rt_poi_count; i++)
+	{
+		const rt_poi_t *src = &rt_poi[i];
+
+		vec3_t v;
+		VectorSubtract (src->origin, origin, v);
+
+		float distsq_thresh = src->is_super_imporant ? threshold_loose : threshold;
+
+		if (DotProduct (v, v) < distsq_thresh)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+typedef struct rt_elight_s
+{
+	int      state;
+	vec3_t   origin;
+	float    intensity;
+	int      lightstyle;
+	qboolean is_around_poi;
+} rt_elight_t;
+
+rt_elight_t *rt_elights = NULL;
+int          rt_elights_count = 0;
+int          rt_elights_allocated = 0;
+
+// Parse worldmodel->entities, to find static lights
+void RT_ParseElights ()
+{
+	rt_elights_count = 0;
+
+	RT_ParsePointsOfInterest ();
+
+	char key[128], value[4096];
+
+	if (!cl.worldmodel)
+	{
+		return;
+	}
+
+	const char *data = cl.worldmodel->entities;
+	if (!data)
+	{
+		return;
+	}
+
+	rt_elight_t struct_values = {0};
+
+#define STRUCT_STATE_STRUCT_STARTED       1
+#define STRUCT_STATE_FOUND_LIGHTCLASSNAME 2
+#define STRUCT_STATE_FOUND_ORIGIN         4
+#define STRUCT_STATE_FOUND_INTENSITY      8
+#define STRUCT_STATE_FOUND_WITH_MODEL     16
+#define STRUCT_STATE_FOUND_LIGHTSTYLE     32
+#define STRUCT_STATE_FOUND_APPLY_OFFSET   64
+
+	while (1)
+	{
+		data = COM_Parse (data);
+		if (!data)
+			return; // error
+
+		if (com_token[0] == '{')
+		{
+			memset (&struct_values, 0, sizeof (struct_values));
+			struct_values.state = STRUCT_STATE_STRUCT_STARTED;
+			continue;
+		}
+		else if (com_token[0] == '}')
+		{
+			if ((struct_values.state & STRUCT_STATE_STRUCT_STARTED) &&
+				(struct_values.state & STRUCT_STATE_FOUND_LIGHTCLASSNAME) &&
+				(struct_values.state & STRUCT_STATE_FOUND_ORIGIN))
+			{
+				struct_values.is_around_poi = IsAroundPOI (struct_values.origin);
+
+				if (rt_elights_count >= rt_elights_allocated)
+				{
+					rt_elights_allocated += 256;
+					rt_elights = Mem_Realloc (rt_elights, sizeof (rt_elight_t) * rt_elights_allocated);
+				}
+				rt_elights[rt_elights_count] = struct_values;
+				rt_elights_count++;
+			}
+
+			struct_values.state = 0; // end of struct
+			continue;
+		}
+
+		if (com_token[0] == '_')
+			q_strlcpy (key, com_token + 1, sizeof (key));
+		else
+			q_strlcpy (key, com_token, sizeof (key));
+		while (key[0] && key[strlen (key) - 1] == ' ') // remove trailing spaces
+			key[strlen (key) - 1] = 0;
+		data = COM_Parse (data);
+		if (!data)
+			return; // error
+		q_strlcpy (value, com_token, sizeof (value));
+
+		if (strcmp (key, "classname") == 0)
+		{
+			if (IsClassname_Light (value))
+			{
+				struct_values.state |= STRUCT_STATE_FOUND_LIGHTCLASSNAME;
+			}
+
+			if (IsClassname_LightWithModel (value))
+			{
+				struct_values.state |= STRUCT_STATE_FOUND_WITH_MODEL;
+
+				if (IsClassname_Offsetted (value))
+				{
+					struct_values.state |= STRUCT_STATE_FOUND_APPLY_OFFSET;
+				}
+			}
+		}
+		else if (strcmp (key, "origin") == 0)
+		{
+			vec3_t tmpvec;
+			int    components = sscanf (value, "%f %f %f", &tmpvec[0], &tmpvec[1], &tmpvec[2]);
+
+			if (components == 3)
+			{
+				struct_values.origin[0] = tmpvec[0];
+				struct_values.origin[1] = tmpvec[1];
+				struct_values.origin[2] = tmpvec[2];
+				struct_values.state |= STRUCT_STATE_FOUND_ORIGIN;
+			}
+		}
+		else if (strcmp (key, "light") == 0)
+		{
+			float tmpval = strtof (value, NULL);
+
+			if (tmpval > 0.0f)
+			{
+				struct_values.intensity = tmpval;
+				struct_values.state |= STRUCT_STATE_FOUND_INTENSITY;
+			}
+		}
+		else if (strcmp (key, "style") == 0)
+		{
+			int tmpval = strtol (value, NULL, 10);
+
+			if (tmpval >= 0 && tmpval < MAX_LIGHTSTYLES)
+			{
+				struct_values.lightstyle = tmpval;
+				struct_values.state |= STRUCT_STATE_FOUND_LIGHTSTYLE;
+			}
+		}
+	}
+}
+
+void RT_UploadAllElights ()
+{
+	if (CVAR_TO_FLOAT (rt_elight_normaliz) < 0.5f)
+	{
+		return;
+	}
+
+	for (int i = 0; i < rt_elights_count; i++)
+	{
+		const rt_elight_t *src = &rt_elights[i];
+
+		assert (src->state & STRUCT_STATE_STRUCT_STARTED);
+		assert (src->state & STRUCT_STATE_FOUND_LIGHTCLASSNAME);
+		assert (src->state & STRUCT_STATE_FOUND_ORIGIN);
+
+		float quake_intensity;
+		if (src->state & STRUCT_STATE_FOUND_INTENSITY)
+		{
+			quake_intensity = src->intensity;
+		}
+		else
+		{
+			quake_intensity = src->state & STRUCT_STATE_FOUND_WITH_MODEL ? CVAR_TO_FLOAT (rt_elight_default_mdl) : CVAR_TO_FLOAT (rt_elight_default);
+		}
+
+		qboolean accept =
+			quake_intensity >= CVAR_TO_FLOAT (rt_elight_threshold) &&
+			CVAR_TO_FLOAT (rt_elight_threshold) >= 0;
+
+		if (src->state & STRUCT_STATE_FOUND_WITH_MODEL)
+		{
+			accept = true;
+		}
+
+		if ((src->state & STRUCT_STATE_FOUND_LIGHTSTYLE) && src->lightstyle > 0)
+		{
+			accept = true;
+		}
+
+		if (src->is_around_poi)
+		{
+			accept = true;
+		}
+
+		if (accept)
+		{
+			float intens = quake_intensity / CVAR_TO_FLOAT (rt_elight_normaliz);
+
+			if (src->state & STRUCT_STATE_FOUND_LIGHTSTYLE)
+			{
+				float ls = (float)d_lightstylevalue[src->lightstyle] / 256.0f;
+				intens *= CLAMP (0.0f, ls, 1.0f);
+			}
+
+			vec3_t color;
+			RT_INIT_DEFAULT_LIGHT_COLOR (color);
+			VectorScale (color, intens, color);
+			RT_FIXUP_LIGHT_INTENSITY (color, true);
+
+			RgSphericalLightUploadInfo info = {
+				.uniqueID = (uint64_t)UINT16_MAX + i,
+				.color = {color[0], color[1], color[2]},
+				.position = {src->origin[0], src->origin[1], src->origin[2]},
+				.radius = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_elight_radius)),
+			};
+
+			// offset up a bit, so light is not inside the model itself
+			if (src->state & STRUCT_STATE_FOUND_APPLY_OFFSET)
+			{
+				info.position.data[2] += METRIC_TO_QUAKEUNIT (0.75f);
+			}
+
+			RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &info);
+			RG_CHECK (r);
+
+			RT_ClusterLightAdd (info.uniqueID, info.position.data);
+		}
+	}
+}
+
 int r_dlightframecount;
 
 // dlight origins in the space of the model currently having its lightmaps built: world space for the world model,

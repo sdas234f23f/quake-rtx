@@ -1793,6 +1793,27 @@ void RT_DrawTextureChains_Multitexture (
 	Atomic_AddUInt32 (&rs_brushpasses, brushpasses);
 }
 
+/*
+=================
+RT_DrawTextureChains
+
+RT renderer version of R_DrawTextureChains (with entity unique id).
+=================
+*/
+void RT_DrawTextureChains (rt_cb_context_t *cbx, qmodel_t *model, entity_t *ent, texchain_t chain, int entuniqueid)
+{
+	float entalpha;
+
+	if (ent != NULL)
+		entalpha = ENTALPHA_DECODE (ent->alpha);
+	else
+		entalpha = 1;
+
+	if (!r_gpulightmapupdate.value)
+		R_UploadLightmaps ();
+	RT_DrawTextureChains_Multitexture (cbx, model, ent, chain, entalpha, 0, model->numtextures, entuniqueid);
+}
+
 #if RT_USE_SPHERE_INSTEAD_OF_POLY
 static void AddSphericalLight (qboolean upload, const RgPolygonalLightUploadInfo *src, vec3_t accum_center, vec3_t accum_normal, int sharing)
 {

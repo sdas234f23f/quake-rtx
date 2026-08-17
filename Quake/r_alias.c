@@ -477,6 +477,329 @@ static void R_SetupAliasLighting (entity_t *e, vec3_t *shadevector, vec3_t *ligh
 	VectorScale ((*lightcolor), 1.0f / 200.0f, (*lightcolor));
 }
 
+// ============================================================================
+// q2rtx: RT renderer alias model drawing (ported from vkquake-rt)
+// ============================================================================
+
+extern cvar_t rt_classic_render;
+extern cvar_t rt_model_rough;
+extern cvar_t rt_model_metal;
+extern cvar_t rt_viewm_fovscale;
+extern cvar_t rt_viewm_wide;
+extern cvar_t rt_dlight_intensity;
+extern cvar_t rt_dlight_radius;
+
+static const RgVertex *RT_GetModelVerticesForPose (const qmodel_t *m, const aliashdr_t *hdr, int pose)
+{
+	assert (m != NULL && m->rtvertices != NULL);
+
+	return &m->rtvertices[(size_t)pose * hdr->numverts_vbo];
+}
+
+static size_t RT_GetNextAllocStep (size_t x)
+{
+	const size_t step = 4096;
+
+	size_t i = (x + (step - 1)) / step;
+	return i * step;
+}
+
+static float RT_avertexnormal_dot (const vec3_t vertexnormal, const vec3_t shadevector)
+{
+	float dot = DotProduct (vertexnormal, shadevector);
+	// wtf - this reproduces anorm_dots within as reasonable a degree of tolerance as the >= 0 case
+	if (dot < 0.0f)
+		return 1.0f + dot * (13.0f / 44.0f);
+	else
+		return 1.0f + dot;
+}
+
+static float RT_Lerp (float a, float b, float t)
+{
+	float dt = b - a;
+	return a + dt * t;
+}
+
+static void RT_LerpPosition (float *dst, const float *src1, const float *src2, float blend)
+{
+	for (int j = 0; j < 3; j++)
+	{
+		dst[j] = RT_Lerp (src1[j], src2[j], blend);
+	}
+}
+
+static const RgVertex *RT_GetPoseVertices (
+	const qmodel_t *m, const aliashdr_t *hdr, int pose1, int pose2, float blend, /* const */ vec3_t shadevector, /* const */ vec3_t lightcolor)
+{
+	const RgVertex *v_pose1 = RT_GetModelVerticesForPose (m, hdr, pose1);
+	const RgVertex *v_pose2 = RT_GetModelVerticesForPose (m, hdr, pose2);
+
+	// we don't care about per-vertex colors with RT
+	const qboolean need_vertex_lighting = CVAR_TO_BOOL (rt_classic_render);
+
+	if (blend < FLT_EPSILON && !need_vertex_lighting)
+	{
+		return v_pose1;
+	}
+
+	static RgVertex *tempstorage = NULL;
+	static size_t    tempstorage_numverts = 0;
+	if ((size_t)hdr->numverts_vbo > tempstorage_numverts)
+	{
+		tempstorage_numverts = RT_GetNextAllocStep (hdr->numverts_vbo);
+		Mem_Free (tempstorage);
+		tempstorage = Mem_Alloc (tempstorage_numverts * sizeof (RgVertex));
+	}
+
+	memcpy (tempstorage, v_pose1, hdr->numverts_vbo * sizeof (RgVertex));
+
+	for (int i = 0; i < hdr->numverts_vbo; i++)
+	{
+		RgVertex *dst = &tempstorage[i];
+
+		const RgVertex *src1 = &v_pose1[i];
+		const RgVertex *src2 = &v_pose2[i];
+
+		RT_LerpPosition (dst->position, src1->position, src2->position, blend);
+
+		if (need_vertex_lighting)
+		{
+			float dot1 = RT_avertexnormal_dot (src1->normal, shadevector);
+			float dot2 = RT_avertexnormal_dot (src2->normal, shadevector);
+
+			vec3_t vertcolor;
+			VectorScale (lightcolor, RT_Lerp (dot1, dot2, blend), vertcolor);
+
+			dst->packedColor = RT_PackColorToUint32_FromFloat01 (vertcolor[0], vertcolor[1], vertcolor[2], 1.0f);
+		}
+	}
+
+	return tempstorage;
+}
+
+static RgTransform RT_GetAliasModelTransform (const aliashdr_t *paliashdr, const lerpdata_t *lerpdata, qboolean isfirstperson)
+{
+	float model_matrix[16];
+	IdentityMatrix (model_matrix);
+	R_RotateForEntity (model_matrix, (float *)lerpdata->origin, (float *)lerpdata->angles, ENTSCALE_DEFAULT);
+
+	float fovscalex = 1.0f;
+	float fovscaley = 1.0f;
+	if (isfirstperson && CVAR_TO_FLOAT (rt_viewm_fovscale) > 0)
+	{
+		fovscalex = CVAR_TO_FLOAT (rt_viewm_fovscale) * CVAR_TO_FLOAT (rt_viewm_wide);
+		fovscaley = CVAR_TO_FLOAT (rt_viewm_fovscale);
+	}
+
+	float translation_matrix[16];
+	TranslationMatrix (translation_matrix, paliashdr->scale_origin[0], paliashdr->scale_origin[1] * fovscalex, paliashdr->scale_origin[2] * fovscaley);
+	MatrixMultiply (model_matrix, translation_matrix);
+
+	float scale_matrix[16];
+	ScaleMatrix (scale_matrix, paliashdr->scale[0], paliashdr->scale[1] * fovscalex, paliashdr->scale[2] * fovscaley);
+	MatrixMultiply (model_matrix, scale_matrix);
+
+	return RT_GetModelTransform (model_matrix);
+}
+
+static void RT_GL_DrawAliasFrame (
+	rt_cb_context_t *cbx, entity_t *e, aliashdr_t *paliashdr, const lerpdata_t lerpdata, gltexture_t *tx, float entity_alpha,
+	qboolean alphatest, vec3_t shadevector, vec3_t lightcolor, int entuniqueid)
+{
+	// poses the same means either 1. the entity has paused its animation, or 2. r_lerpmodels is disabled
+	float blend = lerpdata.pose1 != lerpdata.pose2 ? lerpdata.blend : 0;
+
+	qboolean rasterize = entity_alpha < 1.0f;
+	qboolean isfirstperson = (e == &cl.viewent);
+	qboolean isviewer = (e == &cl.entities[cl.viewentity]) && !CVAR_TO_BOOL (chase_active);
+
+	if (tx && tx->rtcustomtextype == RT_CUSTOMTEXTUREINFO_TYPE_RASTER_LIGHT)
+	{
+		rasterize = true;
+
+		vec3_t color = {tx->rtlightcolor[0], tx->rtlightcolor[1], tx->rtlightcolor[2]};
+		VectorScale (color, CVAR_TO_FLOAT (rt_dlight_intensity), color);
+		RT_FIXUP_LIGHT_INTENSITY (color, true);
+
+		RgSphericalLightUploadInfo light_info = {
+			.uniqueID = RT_GetAliasModelUniqueId (entuniqueid),
+			.color = {color[0], color[1], color[2]},
+			.position = {lerpdata.origin[0], lerpdata.origin[1], lerpdata.origin[2] + tx->rtupoffset},
+			.radius = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_dlight_radius)),
+		};
+
+		RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &light_info);
+		RG_CHECK (r);
+	}
+
+	assert ((!isviewer && !isfirstperson) || (isviewer && !isfirstperson) || (!isviewer && isfirstperson));
+
+	if (rasterize)
+	{
+		if (isviewer)
+		{
+			return;
+		}
+
+		RgRasterizedGeometryUploadInfo info = {
+			.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_DEFAULT,
+			.vertexCount = paliashdr->numverts_vbo,
+			.pVertices = RT_GetPoseVertices (e->model, paliashdr, lerpdata.pose1, lerpdata.pose2, blend, shadevector, lightcolor),
+			.indexCount = paliashdr->numindexes,
+			.pIndices = e->model->rtindices,
+			.transform = RT_GetAliasModelTransform (paliashdr, &lerpdata, isfirstperson),
+			.color = RT_COLOR_WHITE,
+			.material = tx ? tx->rtmaterial : RG_NO_MATERIAL,
+			.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_DEPTH_TEST | RG_RASTERIZED_GEOMETRY_STATE_DEPTH_WRITE,
+			.blendFuncSrc = 0,
+			.blendFuncDst = 0,
+		};
+
+		if (alphatest)
+		{
+			info.pipelineState |= RG_RASTERIZED_GEOMETRY_STATE_ALPHA_TEST;
+		}
+
+		RgResult r = rgUploadRasterizedGeometry (vulkan_globals_rt.instance, &info, NULL, NULL);
+		RG_CHECK (r);
+	}
+	else
+	{
+		qboolean is_invis = (isfirstperson || isviewer) && (cl.items & IT_INVISIBILITY);
+		qboolean exact_normals = tx ? tx->rtcustomtextype == RT_CUSTOMTEXTUREINFO_TYPE_EXACT_NORMALS : 0;
+
+		RgGeometryUploadInfo info = {
+			.uniqueID = RT_GetAliasModelUniqueId (entuniqueid),
+			.flags =
+				(is_invis ? RG_GEOMETRY_UPLOAD_IGNORE_REFRACT_AFTER_REFRACT_BIT : 0) |
+				(exact_normals ? RG_GEOMETRY_UPLOAD_EXACT_NORMALS_BIT : RG_GEOMETRY_UPLOAD_GENERATE_NORMALS_BIT),
+			.geomType = RG_GEOMETRY_TYPE_DYNAMIC,
+			.passThroughType =
+				is_invis ? RG_GEOMETRY_PASS_THROUGH_TYPE_GLASS_REFLECT_REFRACT :
+				RG_GEOMETRY_PASS_THROUGH_TYPE_ALPHA_TESTED,
+			.visibilityType =
+				isfirstperson ? RG_GEOMETRY_VISIBILITY_TYPE_FIRST_PERSON :
+				isviewer ? RG_GEOMETRY_VISIBILITY_TYPE_FIRST_PERSON_VIEWER :
+				RG_GEOMETRY_VISIBILITY_TYPE_WORLD_0,
+			.vertexCount = paliashdr->numverts_vbo,
+			.pVertices = RT_GetPoseVertices (e->model, paliashdr, lerpdata.pose1, lerpdata.pose2, blend, shadevector, lightcolor),
+			.indexCount = paliashdr->numindexes,
+			.pIndices = e->model->rtindices,
+			.layerColors = {RT_COLOR_WHITE},
+			.layerBlendingTypes = {RG_GEOMETRY_MATERIAL_BLEND_TYPE_OPAQUE},
+			.geomMaterial = {tx ? tx->rtmaterial : RG_NO_MATERIAL},
+			.defaultRoughness = CVAR_TO_FLOAT (rt_model_rough),
+			.defaultMetallicity = CVAR_TO_FLOAT (rt_model_metal),
+			.defaultEmission = 0,
+			.transform = RT_GetAliasModelTransform (paliashdr, &lerpdata, isfirstperson),
+		};
+
+		RgResult r = rgUploadGeometry (vulkan_globals_rt.instance, &info);
+		RG_CHECK (r);
+	}
+
+	Atomic_AddUInt32 (&rs_aliaspasses, paliashdr->numtris);
+}
+
+/*
+=================
+RT_DrawAliasModel
+
+RT renderer version of R_DrawAliasModel. Only classic MDL models have RT
+pose data (rtvertices/rtindices); MD5/MD3 models are skipped until ported.
+=================
+*/
+void RT_DrawAliasModel (rt_cb_context_t *cbx, entity_t *e, int entuniqueid)
+{
+	aliashdr_t	*paliashdr;
+	int			 anim, skinnum = e->skinnum;
+	gltexture_t *tx;
+	lerpdata_t	 lerpdata;
+
+	//
+	// setup pose/lerp data -- do it first so we don't miss updates due to culling
+	//
+	paliashdr = (aliashdr_t *)Mod_Extradata_CheckSkin (e->model, skinnum);
+
+	qboolean alphatest = !!(e->model->flags & MF_HOLEY);
+
+	R_SetupAliasFrame (e, paliashdr, &lerpdata);
+	R_GetEntityLerpedTransform (e, lerpdata.origin, lerpdata.angles);
+
+	//
+	// cull it
+	//
+	if (R_CullModelForEntity (e))
+		return;
+
+	// no RT pose data (MD5/MD3 replacement models) -- skip until ported
+	if (!e->model->rtvertices || !e->model->rtindices)
+		return;
+
+	//
+	// set up for alpha blending
+	//
+	float entalpha;
+	if (r_lightmap_cheatsafe)
+		entalpha = 1;
+	else
+		entalpha = ENTALPHA_DECODE (e->alpha);
+	if (entalpha == 0)
+		return;
+
+	//
+	// set up lighting
+	//
+	vec3_t shadevector, lightcolor;
+	R_SetupAliasLighting (e, &shadevector, &lightcolor);
+
+	// Draw each surface of the model independently:
+	for (aliashdr_t *hdr = paliashdr; hdr != NULL; hdr = hdr->nextsurface)
+	{
+		//
+		// set up textures
+		//
+		anim = (int)(cl.time * 10) & 3;
+		if ((skinnum >= hdr->numskins) || (skinnum < 0))
+		{
+			Con_DPrintf ("RT_DrawAliasModel: no such skin # %d for '%s'\n", skinnum, e->model->name);
+			// ericw -- display skin 0 for winquake compatibility
+			skinnum = 0;
+		}
+		tx = hdr->gltextures[skinnum][anim];
+
+		if (e->colormap != vid.colormap && !gl_nocolors.value)
+			if ((uintptr_t)e >= (uintptr_t)&cl.entities[1] && (uintptr_t)e <= (uintptr_t)&cl.entities[cl.maxclients] && playertextures[e - cl.entities - 1])
+				tx = playertextures[e - cl.entities - 1];
+
+		// if there are no texture, force the grey one. (a.k.a lightmap).
+		if (tx == NULL)
+			tx = greytexture;
+
+		if (r_fullbright_cheatsafe)
+		{
+			lightcolor[0] = 0.5f;
+			lightcolor[1] = 0.5f;
+			lightcolor[2] = 0.5f;
+		}
+		if (r_lightmap_cheatsafe)
+		{
+			tx = greytexture;
+			if (r_fullbright.value)
+			{
+				lightcolor[0] = 1.0f;
+				lightcolor[1] = 1.0f;
+				lightcolor[2] = 1.0f;
+			}
+		}
+
+		//
+		// draw it
+		//
+		RT_GL_DrawAliasFrame (cbx, e, hdr, lerpdata, tx, entalpha, alphatest, shadevector, lightcolor, entuniqueid);
+	} // for each surface
+}
+
 /*
 =================
 R_DrawAliasModel -- johnfitz -- almost completely rewritten

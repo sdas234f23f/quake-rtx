@@ -721,6 +721,10 @@ typedef struct qmodel_s
 	//
 	byte *extradata[PV_SIZE]; // only access through Mod_Extradata
 
+	// q2rtx: RT renderer model data (classic MDL poses as RgVertex + 32-bit indices)
+	RgVertex *rtvertices;
+	uint32_t *rtindices;
+
 	// Ray tracing
 	VkAccelerationStructureKHR blas;
 	VkBuffer				   buffer;
