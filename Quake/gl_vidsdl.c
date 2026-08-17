@@ -5674,8 +5674,8 @@ void VID_Init (void)
 	int			display_width, display_height;
 	float		display_refreshrate;
 	qboolean	fullscreen;
-	const char *read_vars[] = {"vid_fullscreen",		"vid_width",	"vid_height", "vid_refreshrate", "vid_vsync",
-							   "vid_desktopfullscreen", "vid_fsaamode", "vid_fsaa",	  "vid_borderless"};
+	const char *read_vars[] = {"vid_fullscreen",		 "vid_width",		"vid_height",	"vid_refreshrate", "vid_vsync",
+							   "vid_desktopfullscreen", "vid_fsaamode", "vid_fsaa",	  "vid_borderless", "rt_renderer"};
 #define num_readvars countof (read_vars)
 
 	Cvar_RegisterVariable (&vid_fullscreen);  // johnfitz
@@ -5691,6 +5691,7 @@ void VID_Init (void)
 	Cvar_RegisterVariable (&vid_desktopfullscreen); // QuakeSpasm
 	Cvar_RegisterVariable (&vid_borderless);		// QuakeSpasm
 	Cvar_RegisterVariable (&vid_palettize);
+	Cvar_RegisterVariable (&rt_renderer); // q2rtx: renderer selection (0 = native, 1 = RT)
 #if defined(_DEBUG)
 	Cvar_RegisterVariable (&r_raydebug);
 #endif
