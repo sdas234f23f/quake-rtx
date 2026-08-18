@@ -77,15 +77,21 @@ if (-not (Test-Path (Join-Path $shaderOutDir "*.spv"))) {
     }
 }
 
-# Deploy the RT renderer shaders into the build's game dir (id1/shaders); the
-# renderer loads them through the engine file system (pkz-aware).
+# Package the generated RT renderer shaders into <game>/shaders.pkz. The
+# renderer loads them through the engine file system (pfnOpenFile ->
+# COM_FindFile); mounted .pkz archives are searched BEFORE the game dir, so
+# the shaders are found even without a loose shaders/ folder. Entries must be
+# "shaders/<name>.spv" to match the renderer's shader folder path.
 $gameDir = Join-Path $BuildDir "id1"
+$shaderOutDir = Join-Path $PSScriptRoot "subprojects\vkpt\Build"
 if (Test-Path (Join-Path $shaderOutDir "*.spv")) {
-    $shadersOut = Join-Path $gameDir "shaders"
-    if (-not (Test-Path $shadersOut)) {
-        New-Item -ItemType Directory -Path $shadersOut -Force | Out-Null
-    }
-    Copy-Item (Join-Path $shaderOutDir "*.spv") $shadersOut -Force
+    python (Join-Path $PSScriptRoot "Tools\zip_shaders.py") `
+        $shaderOutDir (Join-Path $gameDir "shaders.pkz") "shaders"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    # the loose shaders/ folder is no longer needed (pkz is searched first)
+    $shadersLoose = Join-Path $gameDir "shaders"
+    if (Test-Path $shadersLoose) { Remove-Item $shadersLoose -Recurse -Force }
 }
 
 # Q2RTX material overrides: deploy the repo's materials/*.mat (VCS source of
@@ -116,7 +122,17 @@ foreach ($pkzRoot in @((Join-Path $PSScriptRoot "id1"), (Join-Path $PSScriptRoot
     if ($pkzFiles) {
         if (-not (Test-Path $gameDir)) { New-Item -ItemType Directory -Path $gameDir -Force | Out-Null }
         foreach ($pkz in $pkzFiles) {
-            Copy-Item $pkz.FullName (Join-Path $gameDir $pkz.Name) -Force
+            $dst = Join-Path $gameDir $pkz.Name
+            # tolerate transient locks (Search indexer / antivirus): if the
+            # target can't be replaced it is already present from a previous
+            # build, so just warn and continue
+            try {
+                Remove-Item $dst -Force -ErrorAction Stop
+                Copy-Item $pkz.FullName $dst -Force -ErrorAction Stop
+            }
+            catch {
+                Write-Warning "could not refresh $($pkz.Name) (file busy): $($_.Exception.Message)"
+            }
         }
     }
 }

@@ -220,6 +220,12 @@ def main():
         lastModifTime = int(pathlib.Path(filename).stat().st_mtime)
         isOutdated = filename in cache and lastModifTime != cache[filename]
 
+        # Rebuild if the output .spv is missing: the cache can be up to date
+        # while the output was deleted/never produced (e.g. a cleaned Build/
+        # folder), and without this check such a shader is silently skipped.
+        outputPath = "../../Build/" + os.path.basename(filename) + ".spv"
+        isOutputMissing = not os.path.exists(outputPath)
+
         if filename not in dependencyMap or isOutdated:
             dependencyMap[filename] = set()
 
@@ -232,7 +238,7 @@ def main():
                             if os.path.exists(dpd):
                                 dependencyMap[filename].add(dpd)
 
-        if filename not in cache or isOutdated or wereDependentModified(dependencyMap, modifiedDependent, cache, filename):
+        if filename not in cache or isOutdated or isOutputMissing or wereDependentModified(dependencyMap, modifiedDependent, cache, filename):
             print("> Building " + os.path.basename(filename))
 
             r = subprocess.run([
