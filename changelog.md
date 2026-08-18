@@ -1,5 +1,19 @@
 # Changelog
 
+## 18.08.2026
+
+### Added
+- **Debug overlay for light sources** — new `rt_debug_lights` cvar draws green wireframe markers over every generated light: boxes for world/model/sprite/dynamic sphere lights, triangles for emissive surface lights, and balls for custom lights. Helps verify how emissive materials become ray-traced lights
+- **Material tools** — generator script for a full `ovrd.mat` (all world textures + model skins, sorted, deduplicated) and documentation (`ovrd.mat.md`) for the `.mat` syntax and keys
+
+### Changed
+- **`ovrd.mat` is now the repository source of truth** — material overrides live in the repo and are deployed to the game directory after every build, instead of being extracted from the pkz archive
+- **Shaders are packed into `shaders.pkz`** — all compiled shaders are packaged into the archive and loaded through the engine file system; the loose `shaders/` folder is no longer needed
+- **`ovrd.mat` cleanup** — entries sorted (texture_* first), missing emissive (`is_light`) overrides added for about 20 world textures
+
+### Fixed
+- Shader generator no longer silently skips shaders whose compiled output is missing (e.g. `CmProceduralSky`) — the packaged shader set is now always complete, preventing "Can't load shader file" errors at startup
+
 ## 17.08.2026
 
 ### Added
