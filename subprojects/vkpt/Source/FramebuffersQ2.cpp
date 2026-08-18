@@ -45,7 +45,13 @@ FramebuffersQ2::FramebuffersQ2(VkDevice _device,
     descSetLayout(VK_NULL_HANDLE),
     descSet(VK_NULL_HANDLE)
 {
-    images = new ImageEntry[NUM_VKPT_IMAGES];
+    // Value-initialize: DestroyImages() runs before the first Create() and
+    // must not touch garbage handles.
+    images = new ImageEntry[NUM_VKPT_IMAGES]();
+    for (int i = 0; i < static_cast<int>(NUM_VKPT_IMAGES); i++)
+    {
+        images[i] = {};
+    }
 
     VkSamplerCreateInfo samplerInfo = {};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
