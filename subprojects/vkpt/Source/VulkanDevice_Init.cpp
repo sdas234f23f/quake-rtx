@@ -81,6 +81,7 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
 
     uniform             = std::make_shared<GlobalUniform>(device, memAllocator);
     uniformQ2           = std::make_shared<GlobalUniformQ2>(device, memAllocator);
+    vertexBufferQ2      = std::make_shared<VertexBufferQ2>(device, memAllocator);
 
     swapchain           = std::make_shared<Swapchain>(device, surface, physDevice->Get(), cmdManager);
 

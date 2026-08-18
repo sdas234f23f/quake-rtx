@@ -156,6 +156,12 @@ Status legend:
     (`GLOBAL_TEXTURES_DESC_SET_IDX`, bindings offset by `BINDING_OFFSET_IMAGES`
     / `BINDING_OFFSET_TEXTURES`). Done: `FramebuffersQ2`.
   - `vertex_buffer.h`, `constants.h`, `shader_structs.h` — shared structs.
+    Set 3 (`VERTEX_BUFFER_DESC_SET_IDX`): primitive array (binding 0,
+    `VERTEX_BUFFER_FIRST_MODEL + MAX_MODELS` entries), position / light /
+    light-counts-history / IQM / readback / tonemap / sun-color / light-stats
+    bindings, layout mirroring Q2RTX `vertex_buffer.c`. All bindings point at
+    a 4-byte null buffer until the geometry port feeds data. Done:
+    `VertexBufferQ2`.
   This replaces `GenerateShaderCommon.py` output (`ShaderCommonC.h` etc.) and
   reworks `GlobalUniform.cpp`, `Framebuffers.cpp`, `TextureDescriptors.cpp`,
   `ShaderManager.cpp`, `VertexCollector*`.
