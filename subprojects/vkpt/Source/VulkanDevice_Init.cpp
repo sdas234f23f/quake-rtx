@@ -94,6 +94,11 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         cmdManager, 
         *info );
 
+    framebuffersQ2      = std::make_shared<FramebuffersQ2>(
+        device,
+        memAllocator,
+        cmdManager );
+
     blueNoise           = std::make_shared<BlueNoise>(
         device,
         info->pBlueNoiseFilePath,

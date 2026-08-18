@@ -38,6 +38,7 @@
 #include "PathTracer.h"
 #include "Rasterizer.h"
 #include "Framebuffers.h"
+#include "FramebuffersQ2.h"
 #include "MemoryAllocator.h"
 #include "TextureManager.h"
 #include "BlueNoise.h"
@@ -165,6 +166,7 @@ private:
     std::shared_ptr<CommandBufferManager>   cmdManager;
 
     std::shared_ptr<Framebuffers>           framebuffers;
+    std::shared_ptr<FramebuffersQ2>         framebuffersQ2;
     std::shared_ptr<Volumetric>             volumetric;
 
     std::shared_ptr<GlobalUniform>          uniform;
