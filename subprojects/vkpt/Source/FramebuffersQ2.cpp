@@ -358,3 +358,12 @@ VkDescriptorSetLayout FramebuffersQ2::GetDescSetLayout() const
 {
     return descSetLayout;
 }
+
+VkImage FramebuffersQ2::GetImage(int index) const
+{
+    if (index < 0 || index >= static_cast<int>(NUM_VKPT_IMAGES))
+    {
+        return VK_NULL_HANDLE;
+    }
+    return images[index].image;
+}

@@ -94,6 +94,11 @@ static ShaderModuleDefinition G_SHADERS[] =
     {"EffectHueShift",              "EfHueShift.comp.spv"              },
     {"EffectCrtDemodulateEncode",   "EfCrtDemodulateEncode.comp.spv"   },
     {"EffectCrtDecode",             "EfCrtDecode.comp.spv"             },
+
+    // Q2RTX shaders (vendored under q2rtx-shaders/, compiled by
+    // GenerateShadersQ2RTX.py into Build/q2rtx/, packed into shaders.pkz
+    // under "shaders/q2rtx/..."). Added one at a time as they are swapped in.
+    {"Q2CheckerboardInterleave",    "q2rtx/checkerboard_interleave.comp.spv"},
 };
 
 

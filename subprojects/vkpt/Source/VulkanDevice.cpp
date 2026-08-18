@@ -1125,6 +1125,11 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
         // legacy ones. Not bound to any pipeline yet (PORTING.md, S2b).
         uniformQ2->Upload(cmd, currentFrameState.GetFrameIndex(), uniform->GetData());
         framebuffersQ2->Create(renderResolution.Width(), renderResolution.Height(), 1);
+
+        // First Q2RTX shader swap (PORTING.md, S3): run
+        // checkerboard_interleave.comp on the Q2 descriptor sets.
+        shaderSwapQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
+
         Render(cmd, *drawInfo);
     }
 

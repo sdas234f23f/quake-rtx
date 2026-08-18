@@ -165,6 +165,17 @@ Status legend:
   This replaces `GenerateShaderCommon.py` output (`ShaderCommonC.h` etc.) and
   reworks `GlobalUniform.cpp`, `Framebuffers.cpp`, `TextureDescriptors.cpp`,
   `ShaderManager.cpp`, `VertexCollector*`.
+
+## Stage S3 (shader swaps, in progress)
+
+- Q2RTX `.spv` are compiled by `GenerateShadersQ2RTX.py` into
+  `Build/q2rtx/` and packed into `shaders.pkz` under `shaders/q2rtx/...`
+  (`zip_shaders.py` now recurses into subfolders).
+- **First swap (done)**: `checkerboard_interleave.comp` runs every frame on
+  the Q2 descriptor sets via `ShaderSwapQ2` (set 0 = `GlobalUniformQ2`,
+  set 1 = `FramebuffersQ2`; no geometry). Output images (`IMG_FLAT_*`) are
+  not displayed yet - the pass validates the Q2RTX shader pipeline and the
+  UBO/image bindings end to end.
 - Then swap shader files one by one; each swap is a testable step.
 
 ## License notes

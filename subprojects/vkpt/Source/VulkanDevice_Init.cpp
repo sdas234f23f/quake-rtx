@@ -130,6 +130,12 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         info->pShaderFolderPath,
         userFileLoad);
 
+    shaderSwapQ2        = std::make_shared<ShaderSwapQ2>(
+        device,
+        shaderManager,
+        uniformQ2,
+        framebuffersQ2);
+
     scene               = std::make_shared<Scene>(
         device,
         physDevice,

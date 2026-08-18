@@ -35,6 +35,7 @@ public:
 
     VkDescriptorSet GetDescSet() const;
     VkDescriptorSetLayout GetDescSetLayout() const;
+    VkImage GetImage(int index) const;
 
 private:
     struct ImageEntry

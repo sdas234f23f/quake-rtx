@@ -55,6 +55,7 @@ set(vkpt_SOURCES
     Source/Framebuffers.cpp
     Source/FramebuffersQ2.cpp
     Source/VertexBufferQ2.cpp
+    Source/ShaderSwapQ2.cpp
     Source/BlueNoise.cpp
     Source/ImageComposition.cpp
     Source/Tonemapping.cpp
