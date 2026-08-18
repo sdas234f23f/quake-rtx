@@ -132,14 +132,28 @@ Status legend:
 
 ## Stage S2 outline (binding layer)
 
-1. Adopt Q2RTX's checked-in headers as the single source of truth:
-   `global_ubo.h`, `global_textures.h`, `shader_structs.h`, `vertex_buffer.h`,
-   `constants.h`, `light_lists.h`.
-2. Align the C++ side (`GlobalUniform.cpp`, `Framebuffers.cpp`,
-   `ShaderManager.cpp`, `VertexCollector*`) with those layouts.
-3. Replace `GenerateShaderCommon.py` generation with the Q2RTX headers where
-   possible.
-4. Then swap shader files one by one; each swap is a testable step.
+- **S2a (done)**: shader toolchain validated for the Q2RTX set. All 46
+  compilable files in `q2rtx-shaders/` build with `glslc
+  --target-env=vulkan1.2 -DVKPT_SHADER` (Q2RTX compiles them the same way via
+  glslangValidator, see `Q2RTX/cmake/compileShaders.cmake`). The FSR shaders
+  additionally need the `fsr/` include path (vendored: `ffx_a.h`,
+  `ffx_fsr1.h`, AMD MIT). `GenerateShadersQ2RTX.py` (our own tool) compiles
+  the set into `Build/q2rtx/*.spv` with an mtime cache — validation only, the
+  game does not load these shaders yet.
+- **S2b (next)**: adopt the dual C++/GLSL headers as the binding contract and
+  rework the C++ side to fill them:
+  - `global_ubo.h` — flat `QVKUniformBuffer_t` of the `UBO_CVAR_LIST` cvars
+    (std140, set = `GLOBAL_UBO_DESC_SET_IDX`, binding 0). C++ side fills it
+    by iterating the same list (Q2RTX main.c does this).
+  - `global_textures.h` — `LIST_IMAGES`/`LIST_IMAGES_A_B` define every
+    framebuffer image/texture (format + size) and the global texture array
+    (`GLOBAL_TEXTURES_DESC_SET_IDX`, bindings offset by `BINDING_OFFSET_IMAGES`
+    / `BINDING_OFFSET_TEXTURES`).
+  - `vertex_buffer.h`, `constants.h`, `shader_structs.h` — shared structs.
+  This replaces `GenerateShaderCommon.py` output (`ShaderCommonC.h` etc.) and
+  reworks `GlobalUniform.cpp`, `Framebuffers.cpp`, `TextureDescriptors.cpp`,
+  `ShaderManager.cpp`, `VertexCollector*`.
+- Then swap shader files one by one; each swap is a testable step.
 
 ## License notes
 
