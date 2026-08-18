@@ -960,7 +960,7 @@ void GL_SetObjectName (uint64_t object, VkObjectType object_type, const char *na
 		}                                                                                       \
 	} while (0)
 
-// ---- Q2RTX light/cluster/material integration (ported from vkquake-rt) ----
+// ---- Q2RTX light/cluster/material integration ----
 void RT_ParseElights (void);
 void RT_UploadAllElights (void);
 

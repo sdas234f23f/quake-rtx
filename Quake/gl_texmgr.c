@@ -57,7 +57,7 @@ extern cvar_t vid_filter;
 extern cvar_t rt_emis_fullbright_dflt;
 
 // ============================================================================
-// q2rtx: RT renderer texture handling (ported from vkquake-rt)
+// q2rtx: RT renderer texture handling
 // ============================================================================
 
 #define RT_CUSTOMTEXTUREINFO_PATH RT_OVERRIDEN_FOLDER "texture_custom_info.txt"

@@ -575,7 +575,7 @@ void GL_SetCanvasColor (float r, float g, float b, float a)
 }
 
 // ============================================================================
-// q2rtx: RT renderer 2D drawing (ported from vkquake-rt)
+// q2rtx: RT renderer 2D drawing
 // ============================================================================
 
 static void RT_GL_OrthoMatrix (rt_cb_context_t *cbx, float left, float right, float bottom, float top, float n, float f)

@@ -2,7 +2,7 @@
 
 // Q2RTX-style single-pass indirect illumination (NEE).
 //
-// Port of Q2RTX indirect_lighting.rgen to the vkquake-rt pipeline:
+// Port of Q2RTX indirect_lighting.rgen:
 //  - one GGX specular bounce per pixel (no ReSTIR, no temporal/spatial reuse)
 //  - direct illumination at the bounce hit is next-event-estimation from the
 //    per-cell light list (CDF + adaptive shadow statistics) plus the sun

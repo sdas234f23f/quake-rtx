@@ -25,7 +25,7 @@
 #include "ShaderCommonGLSL.h"
 #include "Structs.h"
 
-// Functions to access RTGL data.
+// Functions to access renderer data.
 // Available defines:
 // * DESC_SET_GLOBAL_UNIFORM    -- to access global uniform buffer
 // * DESC_SET_VERTEX_DATA       -- to access geometry data;

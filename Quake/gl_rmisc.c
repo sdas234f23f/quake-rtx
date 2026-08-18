@@ -527,7 +527,7 @@ float GL_WaterAlphaForTextureType (textype_t type)
 }
 
 // ============================================================================
-// q2rtx: RT renderer math helpers (ported from vkquake-rt gl_rmisc.c)
+// q2rtx: RT renderer math helpers
 // ============================================================================
 
 RgFloat3D RT_AnglesToDir (vec3_t angles)

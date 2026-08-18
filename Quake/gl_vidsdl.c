@@ -130,7 +130,7 @@ cvar_t		  rt_renderer = {"rt_renderer", "0", CVAR_ARCHIVE};
 rt_vulkanglobals_t vulkan_globals_rt;
 qboolean           request_shaders_reload = false;
 
-// q2rtx: RT renderer cvars (ported from vkquake-rt)
+// q2rtx: RT renderer cvars
 #define CVAR_DEF_LIST( CVAR_DEF_T ) \
 	\
 	CVAR_DEF_T (rt_classic_render, "0") \
@@ -3877,7 +3877,7 @@ static RgRenderSharpenTechnique GetSharpenTechniqueFromCvar ()
 	}
 }
 
-static void UpscaleCvarsToRtgl (RgDrawFrameRenderResolutionParams *pDst)
+static void UpscaleCvarsToRenderer (RgDrawFrameRenderResolutionParams *pDst)
 {
 	int nvDlss = CVAR_TO_INT32 (rt_upscale_dlss);
 	int amdFsr = CVAR_TO_INT32 (rt_upscale_fsr2);
@@ -3989,7 +3989,7 @@ static void UpscaleCvarsToRtgl (RgDrawFrameRenderResolutionParams *pDst)
 	}
 }
 
-static void ResolutionToRtgl (RgDrawFrameRenderResolutionParams *dst, const RgExtent2D winsize, RgExtent2D *storage)
+static void ResolutionToRenderer (RgDrawFrameRenderResolutionParams *dst, const RgExtent2D winsize, RgExtent2D *storage)
 {
 	const float aspect = (float)winsize.width / (float)winsize.height;
 
@@ -4096,8 +4096,8 @@ static void RT_GL_EndRenderingTask (rt_end_rendering_parms_t *parms)
 	const RgExtent2D winsize = {.width = parms->vid_width, .height = parms->vid_height};
 
 	RgDrawFrameRenderResolutionParams resolution_params = {0};
-	ResolutionToRtgl (&resolution_params, winsize, &pixstorage);
-	UpscaleCvarsToRtgl (&resolution_params);
+	ResolutionToRenderer (&resolution_params, winsize, &pixstorage);
+	UpscaleCvarsToRenderer (&resolution_params);
 
 	RgDrawFrameIlluminationParams illum_params = {
 		.maxBounceShadows = CVAR_TO_UINT32 (rt_shadowrays),

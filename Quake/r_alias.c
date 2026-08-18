@@ -478,7 +478,7 @@ static void R_SetupAliasLighting (entity_t *e, vec3_t *shadevector, vec3_t *ligh
 }
 
 // ============================================================================
-// q2rtx: RT renderer alias model drawing (ported from vkquake-rt)
+// q2rtx: RT renderer alias model drawing
 // ============================================================================
 
 extern cvar_t rt_classic_render;

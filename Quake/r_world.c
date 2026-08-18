@@ -943,7 +943,7 @@ RT_MarkAllWorldSurfaces
 
 Chains every world surface into chain_world. The RT renderer uploads the whole
 world once as static geometry (RG_GEOMETRY_TYPE_STATIC), so PVS/frustum/backface
-culling must not drop any surface (vkquake-rt achieves the same with rt_enable_pvs=0).
+culling must not drop any surface (equivalent to rt_enable_pvs=0).
 ===============
 */
 static void RT_MarkAllWorldSurfaces (qboolean *use_tasks)
@@ -1008,7 +1008,7 @@ static void R_MarkSurfacesPrepare (void *unused)
 
 	// choose vis data
 	// q2rtx: the RT renderer uploads the whole world once as static geometry,
-	// so the PVS must not hide any leaf (vkquake-rt does the same via rt_enable_pvs=0).
+	// so the PVS must not hide any leaf (equivalent to rt_enable_pvs=0).
 	if (CVAR_TO_BOOL (rt_renderer) || r_novis.value || r_viewleaf->contents == CONTENTS_SOLID || r_viewleaf->contents == CONTENTS_SKY)
 		mark_surfaces_state.vis = Mod_NoVisPVS (cl.worldmodel);
 	else if (nearwaterportal)
@@ -1296,7 +1296,7 @@ float GL_WaterAlphaForEntityTextureType (entity_t *ent, textype_t type)
 }
 
 // ============================================================================
-// q2rtx: RT renderer world drawing (ported from vkquake-rt)
+// q2rtx: RT renderer world drawing
 // ============================================================================
 
 extern RgVertex *rtallbrushvertices;
@@ -1672,9 +1672,9 @@ static void RT_BatchSurface (rt_cb_context_t *cbx, const rt_uploadsurf_state_t *
 		RT_FlushBatch (cbx, s, brushpasses);
 	}
 
-	// fan triangulation, like R_TriangleIndicesForSurf in vkquake-rt: the RT
-	// renderer (rayCullBackFacingTriangles) uses the REVERSED winding compared
-	// to the native rasterizer, so the fan is (base+i, base+i-1, base).
+	// fan triangulation: the RT renderer (rayCullBackFacingTriangles) uses the
+	// REVERSED winding compared to the native rasterizer, so the fan is
+	// (base+i, base+i-1, base).
 	uint32_t *dest = &cbx->batch_indices[cbx->batch_indices_count];
 	for (int i = 2; i < num_surf_verts; i++)
 	{

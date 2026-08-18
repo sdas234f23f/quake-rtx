@@ -1202,7 +1202,7 @@ static void Skywind_UpdateParams (float *wind_phase, vec3_t wind_dir)
 }
 
 // ============================================================================
-// q2rtx: RT renderer sky drawing (ported from vkquake-rt)
+// q2rtx: RT renderer sky drawing
 // ============================================================================
 
 typedef struct

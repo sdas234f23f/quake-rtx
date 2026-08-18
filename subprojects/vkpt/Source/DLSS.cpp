@@ -124,7 +124,7 @@ bool vkpt::DLSS::TryInit(VkInstance instance, VkDevice device, VkPhysicalDevice 
 
     r = NVSDK_NGX_VULKAN_Init_with_ProjectID(
         pAppGuid,
-        NVSDK_NGX_EngineType::NVSDK_NGX_ENGINE_TYPE_CUSTOM, RG_RTGL_VERSION_API, L"DLSSTemp/", instance, physDevice, device, &commonInfo);
+        NVSDK_NGX_EngineType::NVSDK_NGX_ENGINE_TYPE_CUSTOM, RG_VERSION_API, L"DLSSTemp/", instance, physDevice, device, &commonInfo);
 
     if (NVSDK_NGX_FAILED(r))
     {

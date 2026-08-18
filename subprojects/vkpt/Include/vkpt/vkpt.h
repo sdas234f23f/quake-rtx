@@ -37,7 +37,7 @@
     #define RGCONV
 #endif // defined(_WIN32) && !defined(RG_STATIC)
 
-#define RG_RTGL_VERSION_API "1.03.0000"
+#define RG_VERSION_API "1.03.0000"
 
 #ifdef RG_USE_SURFACE_WIN32
     #include <windows.h>

@@ -199,7 +199,7 @@ static void R_CreateSpriteVertices (entity_t *e, mspriteframe_t *frame, basicver
 }
 
 // ============================================================================
-// q2rtx: RT renderer sprite drawing (ported from vkquake-rt)
+// q2rtx: RT renderer sprite drawing
 // ============================================================================
 
 extern cvar_t rt_model_rough;

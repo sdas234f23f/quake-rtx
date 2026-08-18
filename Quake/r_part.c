@@ -55,8 +55,8 @@ extern cvar_t r_showtris;
 static VkBuffer particle_index_buffer;
 
 // q2rtx: RT quad-particle indices. A static buffer, allocated once in
-// R_InitParticles (like vkquake-rt) - allocating it from the shared RT scratch
-// buffer would overlap the vertex data and corrupt every particle.
+// R_InitParticles - allocating it from the shared RT scratch buffer would
+// overlap the vertex data and corrupt every particle.
 static uint32_t *rt_quadindices;
 
 /*

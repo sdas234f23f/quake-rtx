@@ -395,7 +395,7 @@ static void R_SetupContext (cb_context_t *cbx)
 }
 
 // ============================================================================
-// q2rtx: RT renderer view setup and render orchestration (ported from vkquake-rt)
+// q2rtx: RT renderer view setup and render orchestration
 // ============================================================================
 
 extern cvar_t rt_dlight_intensity;
