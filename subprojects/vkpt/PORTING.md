@@ -187,6 +187,11 @@ Status legend:
 - **ASVGF temporal (done)**: `asvgf_temporal.comp` via `AsvgfTemporalQ2` -
   temporal accumulation/filtering of the lighting channels into the history
   images and the atrous ping-pong buffers (15-pixel groups, no blue noise).
+- **ASVGF gradient image (done)**: `asvgf_gradient_img.comp` via
+  `AsvgfGradientImgQ2` - builds the low-res gradient image (GRAD_DWN res).
+- **ASVGF LF filter (done)**: `asvgf_lf.comp` via `AsvgfLfQ2` - 4 LF wavelet
+  iterations driven by an iteration push constant, ping-ponging the
+  ATROUS_PING/PONG LF images.
 - Then swap shader files one by one; each swap is a testable step.
 
 ## License notes

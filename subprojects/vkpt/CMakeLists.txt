@@ -59,6 +59,8 @@ set(vkpt_SOURCES
     Source/BloomQ2.cpp
     Source/CompositingQ2.cpp
     Source/AsvgfTemporalQ2.cpp
+    Source/AsvgfGradientImgQ2.cpp
+    Source/AsvgfLfQ2.cpp
     Source/BlueNoise.cpp
     Source/ImageComposition.cpp
     Source/Tonemapping.cpp

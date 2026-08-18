@@ -1132,6 +1132,8 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
         bloomQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         compositingQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         asvgfTemporalQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
+        asvgfGradientImgQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
+        asvgfLfQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
 
         Render(cmd, *drawInfo);
     }

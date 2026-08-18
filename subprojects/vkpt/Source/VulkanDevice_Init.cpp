@@ -154,6 +154,18 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         uniformQ2,
         framebuffersQ2);
 
+    asvgfGradientImgQ2   = std::make_shared<AsvgfGradientImgQ2>(
+        device,
+        shaderManager,
+        uniformQ2,
+        framebuffersQ2);
+
+    asvgfLfQ2            = std::make_shared<AsvgfLfQ2>(
+        device,
+        shaderManager,
+        uniformQ2,
+        framebuffersQ2);
+
     scene               = std::make_shared<Scene>(
         device,
         physDevice,

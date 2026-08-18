@@ -104,6 +104,8 @@ static ShaderModuleDefinition G_SHADERS[] =
     {"Q2BloomComposite",            "q2rtx/bloom_composite.comp.spv"       },
     {"Q2Compositing",               "q2rtx/compositing.comp.spv"          },
     {"Q2AsvgfTemporal",             "q2rtx/asvgf_temporal.comp.spv"       },
+    {"Q2AsvgfGradientImg",          "q2rtx/asvgf_gradient_img.comp.spv"    },
+    {"Q2AsvgfLf",                   "q2rtx/asvgf_lf.comp.spv"             },
 };
 
 
