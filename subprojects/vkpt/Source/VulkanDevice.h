@@ -43,6 +43,7 @@
 #include "ShaderSwapQ2.h"
 #include "BloomQ2.h"
 #include "CompositingQ2.h"
+#include "AsvgfTemporalQ2.h"
 #include "MemoryAllocator.h"
 #include "TextureManager.h"
 #include "BlueNoise.h"
@@ -179,6 +180,7 @@ private:
     std::shared_ptr<ShaderSwapQ2>           shaderSwapQ2;
     std::shared_ptr<BloomQ2>                bloomQ2;
     std::shared_ptr<CompositingQ2>          compositingQ2;
+    std::shared_ptr<AsvgfTemporalQ2>        asvgfTemporalQ2;
     std::shared_ptr<Scene>                  scene;
 
     std::shared_ptr<ShaderManager>          shaderManager;

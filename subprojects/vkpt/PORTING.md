@@ -184,6 +184,9 @@ Status legend:
 - **Compositing (done)**: `compositing.comp` (denoiser-disabled path) via
   `CompositingQ2` - combines the lighting channels with the surface
   parameters into `IMG_ASVGF_COLOR`.
+- **ASVGF temporal (done)**: `asvgf_temporal.comp` via `AsvgfTemporalQ2` -
+  temporal accumulation/filtering of the lighting channels into the history
+  images and the atrous ping-pong buffers (15-pixel groups, no blue noise).
 - Then swap shader files one by one; each swap is a testable step.
 
 ## License notes

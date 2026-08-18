@@ -58,6 +58,7 @@ set(vkpt_SOURCES
     Source/ShaderSwapQ2.cpp
     Source/BloomQ2.cpp
     Source/CompositingQ2.cpp
+    Source/AsvgfTemporalQ2.cpp
     Source/BlueNoise.cpp
     Source/ImageComposition.cpp
     Source/Tonemapping.cpp
