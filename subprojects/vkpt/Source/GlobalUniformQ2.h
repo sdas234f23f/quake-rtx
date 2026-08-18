@@ -1,10 +1,13 @@
-// Q2RTX-convention uniform buffer (GlobalUniformQ2).
+// Q2RTX-convention uniform + instance buffer (GlobalUniformQ2).
 //
-// First piece of the Q2RTX binding layer (see PORTING.md, stage S2b): fills
-// the Q2RTX `QVKUniformBuffer_t` (q2rtx-shaders/global_ubo.h, C branch) with
-// the same per-frame data the legacy pipeline uses and uploads it through an
-// AutoBuffer. The descriptor set is NOT bound to any pipeline yet - it is
-// prepared so Q2RTX shaders can be swapped in one module at a time.
+// Part of the Q2RTX binding layer (see PORTING.md, stage S2b): fills the
+// Q2RTX `QVKUniformBuffer_t` (q2rtx-shaders/global_ubo.h, C branch) with the
+// same per-frame data the legacy pipeline uses and uploads it through an
+// AutoBuffer. Binding 1 is the InstanceBuffer SSBO in the same buffer, like
+// in Q2RTX uniform_buffer.c; its data is zeroed until the geometry port
+// starts feeding real instances. The descriptor set is NOT bound to any
+// pipeline yet - it is prepared so Q2RTX shaders can be swapped in one
+// module at a time.
 
 #pragma once
 

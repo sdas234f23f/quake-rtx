@@ -7,6 +7,9 @@
 # vec3 is paired with a 4-byte scalar, so 12+4 = 16). This tool pins that
 # assumption so a future edit cannot silently break it.
 #
+# Also verifies the InstanceBuffer / ModelInstance structs (same C-vs-std140
+# contract) and resolves their array sizes from constants.h.
+#
 # Usage: python check_q2rtx_ubo.py [path-to-global_ubo.h]
 
 import re
@@ -14,8 +17,10 @@ import sys
 import os
 
 HEADER = "subprojects/vkpt/q2rtx-shaders/global_ubo.h"
+CONSTANTS = "subprojects/vkpt/q2rtx-shaders/constants.h"
 if len(sys.argv) > 1:
     HEADER = sys.argv[1]
+    CONSTANTS = os.path.join(os.path.dirname(HEADER), "constants.h")
 
 
 # ---------------------------------------------------------------------------
@@ -65,18 +70,76 @@ def round_up(value, alignment):
 # Parsing
 # ---------------------------------------------------------------------------
 
-def parse_struct_blocks(text):
-    """Extract BEGIN_SHADER_STRUCT blocks: name -> list of (type, field)."""
+def parse_constants(path):
+    """Parse `#define NAME value` from constants.h. Handles simple integer
+    expressions made of already-defined constants (e.g.
+    `#define MAX_TLAS_INSTANCES (MAX_MODEL_INSTANCES + MAX_RESERVED_INSTANCES)`)."""
+    consts = {}
+    if not os.path.exists(path):
+        return consts
+    with open(path, "r") as f:
+        text = f.read()
+    for m in re.finditer(r"#define\s+(\w+)\s+([^\n]+)", text):
+        name, expr = m.group(1), m.group(2).strip()
+        expr = re.sub(r"/\*.*?\*/", "", expr)
+        expr = re.sub(r"//.*", "", expr).strip()
+        if not re.fullmatch(r"[0-9()\s\w+*\-/]+", expr):
+            continue
+        consts[name] = expr
+    # resolve until fixpoint
+    for _ in range(16):
+        changed = False
+        for name, expr in list(consts.items()):
+            if isinstance(expr, int):
+                continue
+            resolved = expr
+            for other, value in consts.items():
+                if other != name and isinstance(value, int):
+                    resolved = resolved.replace(other, str(value))
+            try:
+                value = eval(resolved, {"__builtins__": {}}, {})
+            except Exception:
+                continue
+            if isinstance(value, int) and consts[name] != value:
+                consts[name] = value
+                changed = True
+        if not changed:
+            break
+    # replace any remaining expression strings with ints where possible
+    for name, expr in list(consts.items()):
+        if not isinstance(expr, int):
+            try:
+                consts[name] = eval(expr, {"__builtins__": {}}, {})
+            except Exception:
+                pass
+    return consts
+
+
+def parse_struct_blocks(text, consts=None):
+    """Extract BEGIN_SHADER_STRUCT blocks: name -> list of (type, field, count).
+    Array sizes may be literals or constant names resolved via `consts`."""
+    consts = consts or {}
     structs = {}
     pattern = re.compile(
         r"BEGIN_SHADER_STRUCT\s*\(\s*(\w+)\s*\)\s*\{\s*(.*?)\s*\}",
         re.DOTALL)
-    field_pat = re.compile(r"^\s*([\w]+)\s+(\w+)\s*(?:\[(\d+)\])?\s*;",
+    field_pat = re.compile(r"^\s*([\w]+)\s+(\w+)\s*(?:\[(\w+)\])?\s*;",
                            re.MULTILINE)
     for m in pattern.finditer(text):
         name, body = m.group(1), m.group(2)
-        fields = [(t, n, int(c) if c else 1)
-                  for t, n, c in field_pat.findall(body)]
+        fields = []
+        for t, n, c in field_pat.findall(body):
+            if c:
+                if c.isdigit():
+                    count = int(c)
+                elif c in consts and isinstance(consts[c], int):
+                    count = consts[c]
+                else:
+                    raise ValueError(
+                        f"cannot resolve array size '{c}' in struct {name}")
+            else:
+                count = 1
+            fields.append((t, n, count))
         structs[name] = fields
     return structs
 
@@ -128,13 +191,13 @@ def compute_layout(fields, structs, align_of, size_of):
     for typ, name, count in fields:
         elem_align = align_of(typ)
         elem_size = size_of(typ)
-        if elem_align is None:
-            if typ in structs:
-                sub = compute_layout(structs[typ], structs, align_of, size_of)
-                elem_align = sub[2]
-                elem_size = sub[1]
-            else:
-                raise ValueError(f"unknown type {typ} in {name}")
+        if typ in structs:
+            # Nested struct (e.g. ModelInstance inside InstanceBuffer).
+            sub = compute_layout(structs[typ], structs, align_of, size_of)
+            elem_align = sub[2]
+            elem_size = sub[1]
+        elif elem_align is None:
+            raise ValueError(f"unknown type {typ} in {name}")
 
         if count > 1:
             stride = round_up(elem_size, elem_align)
@@ -154,20 +217,9 @@ def compute_layout(fields, structs, align_of, size_of):
 
 # ---------------------------------------------------------------------------
 
-def main():
-    with open(HEADER, "r") as f:
-        text = f.read()
-
-    structs = parse_struct_blocks(text)
-    fields = parse_macro_list(text, "GLOBAL_UBO_VAR_LIST")
-    fields += parse_cvar_list(text)
-
-    if not fields:
-        print("> could not parse GLOBAL_UBO_VAR_LIST from", HEADER)
-        return 1
-
-    c_entries, c_total, _ = compute_layout(
-        fields, structs, c_align, c_size)
+def check_struct(fields, structs, label):
+    """Compare C layout vs std140 layout for one struct. Returns (ok, msg)."""
+    c_entries, c_total, _ = compute_layout(fields, structs, c_align, c_size)
     g_entries, g_total, g_align = compute_layout(
         fields, structs, std140_align, std140_size)
 
@@ -177,30 +229,53 @@ def main():
     mismatches = []
     for name in g_map:
         if c_map.get(name) != g_map[name]:
-            mismatches.append(
-                (name, c_map.get(name), g_map[name]))
-
-    print(f"> fields: {len(fields)}")
-    print(f"> C struct size:     {c_total} bytes")
-    print(f"> GLSL std140 size:  {g_total} bytes (align {g_align})")
+            mismatches.append((name, c_map.get(name), g_map[name]))
 
     if mismatches:
-        print("> MISMATCHES:")
+        msg = f"> {label} MISMATCHES:"
         for name, c, g in mismatches:
-            print(f"   {name}: C{tuple(c) if c else None} != GLSL{tuple(g) if g else None}")
-        return 1
+            msg += f"\n   {name}: C{tuple(c) if c else None} != GLSL{tuple(g) if g else None}"
+        return False, msg
 
     if c_total != g_total:
-        # All field offsets match; only std140 struct tail padding differs.
-        # This is benign: the last field ends at min(c_total, g_total) and no
-        # shader reads past it. The C++ buffer size (c_total) is what Q2RTX
-        # itself uploads.
-        print(f"> WARNING: tail padding only - C struct {c_total}B, "
-              f"GLSL declares {g_total}B (std140 rounds to {g_align}B)")
-        print("> OK: every field offset/size matches, difference is tail padding")
-        return 0
+        msg = (f"> {label}: OK (field offsets match), "
+               f"C struct {c_total}B vs GLSL {g_total}B "
+               f"(std140 rounds to {g_align}B) - tail padding only")
+        return True, msg
 
-    print("> OK: C layout == std140 layout (no mismatches)")
+    return True, f"> {label}: OK (C layout == std140, {c_total}B)"
+
+
+def main():
+    with open(HEADER, "r") as f:
+        text = f.read()
+
+    consts = parse_constants(CONSTANTS)
+    structs = parse_struct_blocks(text, consts)
+    fields = parse_macro_list(text, "GLOBAL_UBO_VAR_LIST")
+    fields += parse_cvar_list(text)
+
+    if not fields:
+        print("> could not parse GLOBAL_UBO_VAR_LIST from", HEADER)
+        return 1
+
+    ok, msg = check_struct(fields, structs, "UBO (QVKUniformBuffer_t)")
+    print(f"> fields: {len(fields)}")
+    print(msg)
+    if not ok:
+        return 1
+
+    # The InstanceSSBO (set 1, binding 1) is a flat copy of the C
+    # InstanceBuffer, so its layout must match std140 as well.
+    for struct_name in ("ModelInstance", "InstanceBuffer"):
+        if struct_name not in structs:
+            print(f"> ERROR: {struct_name} not found in {HEADER}")
+            return 1
+        ok, msg = check_struct(structs[struct_name], structs, struct_name)
+        print(msg)
+        if not ok:
+            return 1
+
     return 0
 
 

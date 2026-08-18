@@ -140,15 +140,21 @@ Status legend:
   `ffx_fsr1.h`, AMD MIT). `GenerateShadersQ2RTX.py` (our own tool) compiles
   the set into `Build/q2rtx/*.spv` with an mtime cache — validation only, the
   game does not load these shaders yet.
-- **S2b (next)**: adopt the dual C++/GLSL headers as the binding contract and
-  rework the C++ side to fill them:
+- **S2b (in progress)**: adopt the dual C++/GLSL headers as the binding
+  contract and rework the C++ side to fill them:
   - `global_ubo.h` — flat `QVKUniformBuffer_t` of the `UBO_CVAR_LIST` cvars
     (std140, set = `GLOBAL_UBO_DESC_SET_IDX`, binding 0). C++ side fills it
-    by iterating the same list (Q2RTX main.c does this).
+    by iterating the same list (Q2RTX main.c does this). Done: `GlobalUniformQ2`.
+  - Instance SSBO — binding 1 (`GLOBAL_INSTANCE_BUFFER_BINDING_IDX`) in the
+    same buffer and descriptor set, offset
+    `align(sizeof(QVKUniformBuffer_t), 256)`, like Q2RTX `uniform_buffer.c`.
+    `InstanceBuffer`/`ModelInstance` layout verified by `check_q2rtx_ubo.py`
+    (C == std140, 1736832 B / 192 B). The data is zeroed until the geometry
+    port feeds real instances. Done: `GlobalUniformQ2`.
   - `global_textures.h` — `LIST_IMAGES`/`LIST_IMAGES_A_B` define every
     framebuffer image/texture (format + size) and the global texture array
     (`GLOBAL_TEXTURES_DESC_SET_IDX`, bindings offset by `BINDING_OFFSET_IMAGES`
-    / `BINDING_OFFSET_TEXTURES`).
+    / `BINDING_OFFSET_TEXTURES`). Done: `FramebuffersQ2`.
   - `vertex_buffer.h`, `constants.h`, `shader_structs.h` — shared structs.
   This replaces `GenerateShaderCommon.py` output (`ShaderCommonC.h` etc.) and
   reworks `GlobalUniform.cpp`, `Framebuffers.cpp`, `TextureDescriptors.cpp`,

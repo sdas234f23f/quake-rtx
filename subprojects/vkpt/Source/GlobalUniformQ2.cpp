@@ -62,6 +62,13 @@ void FillUniformBuffer(QVKUniformBuffer_t &ubo, const ShGlobalUniform &src)
 
 } // namespace
 
+// Q2RTX keeps the UBO and the instance SSBO in one buffer (see Q2RTX
+// uniform_buffer.c): binding 0 is the UBO at offset 0, binding 1 is the
+// InstanceBuffer right after it, aligned to minUniformBufferOffsetAlignment.
+// 256 is a safe multiple of every typical alignment (16/64/256) and keeps
+// the instance data 256-byte aligned for the descriptor offset.
+const VkDeviceSize Q2_UBO_ALIGNMENT = 256;
+
 GlobalUniformQ2::GlobalUniformQ2(VkDevice _device, std::shared_ptr<MemoryAllocator> _allocator)
 :
     device(_device),
@@ -69,39 +76,53 @@ GlobalUniformQ2::GlobalUniformQ2(VkDevice _device, std::shared_ptr<MemoryAllocat
     descSetLayout(VK_NULL_HANDLE),
     descSet(VK_NULL_HANDLE)
 {
-    // Align the buffer size up to a typical minUniformBufferOffsetAlignment.
-    const VkDeviceSize bufferSize = (sizeof(QVKUniformBuffer_t) + 255) & ~static_cast<VkDeviceSize>(255);
+    const VkDeviceSize bufferSize =
+        (sizeof(QVKUniformBuffer_t) + Q2_UBO_ALIGNMENT - 1) & ~(Q2_UBO_ALIGNMENT - 1);
 
     buffer = std::make_shared<AutoBuffer>(_device, _allocator);
-    buffer->Create(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, "Q2RTX uniform buffer");
+    buffer->Create(bufferSize + sizeof(InstanceBuffer),
+                   VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                       VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                   "Q2RTX uniform + instance buffer");
 
     CreateDescriptors();
 }
 
 void GlobalUniformQ2::CreateDescriptors()
 {
-    VkDescriptorSetLayoutBinding binding = {};
-    binding.binding = GLOBAL_UBO_BINDING_IDX;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_ALL;
+    const VkDeviceSize instanceOffset =
+        (sizeof(QVKUniformBuffer_t) + Q2_UBO_ALIGNMENT - 1) & ~(Q2_UBO_ALIGNMENT - 1);
+
+    VkDescriptorSetLayoutBinding bindings[2] = {};
+
+    bindings[0].binding = GLOBAL_UBO_BINDING_IDX;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_ALL;
+
+    bindings[1].binding = GLOBAL_INSTANCE_BUFFER_BINDING_IDX;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_ALL;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &binding;
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
 
     VkResult r = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descSetLayout);
     VK_CHECKERROR(r);
 
-    VkDescriptorPoolSize poolSize = {};
-    poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSize.descriptorCount = 1;
+    VkDescriptorPoolSize poolSizes[2] = {};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[0].descriptorCount = 1;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[1].descriptorCount = 1;
 
     VkDescriptorPoolCreateInfo poolInfo = {};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.poolSizeCount = 2;
+    poolInfo.pPoolSizes = poolSizes;
     poolInfo.maxSets = 1;
 
     r = vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool);
@@ -116,21 +137,35 @@ void GlobalUniformQ2::CreateDescriptors()
     r = vkAllocateDescriptorSets(device, &allocInfo, &descSet);
     VK_CHECKERROR(r);
 
-    VkDescriptorBufferInfo bufInfo = {};
-    bufInfo.buffer = buffer->GetDeviceLocal();
-    bufInfo.offset = 0;
-    bufInfo.range = sizeof(QVKUniformBuffer_t);
+    VkDescriptorBufferInfo bufInfos[2] = {};
 
-    VkWriteDescriptorSet write = {};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = descSet;
-    write.dstBinding = GLOBAL_UBO_BINDING_IDX;
-    write.dstArrayElement = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    write.descriptorCount = 1;
-    write.pBufferInfo = &bufInfo;
+    bufInfos[0].buffer = buffer->GetDeviceLocal();
+    bufInfos[0].offset = 0;
+    bufInfos[0].range = sizeof(QVKUniformBuffer_t);
 
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    bufInfos[1].buffer = buffer->GetDeviceLocal();
+    bufInfos[1].offset = instanceOffset;
+    bufInfos[1].range = sizeof(InstanceBuffer);
+
+    VkWriteDescriptorSet writes[2] = {};
+
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = descSet;
+    writes[0].dstBinding = GLOBAL_UBO_BINDING_IDX;
+    writes[0].dstArrayElement = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[0].descriptorCount = 1;
+    writes[0].pBufferInfo = &bufInfos[0];
+
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = descSet;
+    writes[1].dstBinding = GLOBAL_INSTANCE_BUFFER_BINDING_IDX;
+    writes[1].dstArrayElement = 0;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[1].descriptorCount = 1;
+    writes[1].pBufferInfo = &bufInfos[1];
+
+    vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 }
 
 GlobalUniformQ2::~GlobalUniformQ2()
@@ -146,10 +181,17 @@ void GlobalUniformQ2::Upload(VkCommandBuffer cmd, uint32_t frameIndex, const ShG
     QVKUniformBuffer_t ubo;
     FillUniformBuffer(ubo, *src);
 
+    const VkDeviceSize instanceOffset =
+        (sizeof(QVKUniformBuffer_t) + Q2_UBO_ALIGNMENT - 1) & ~(Q2_UBO_ALIGNMENT - 1);
+
     void *dst = buffer->GetMapped(frameIndex);
     memcpy(dst, &ubo, sizeof(ubo));
 
-    buffer->CopyFromStaging(cmd, frameIndex, sizeof(QVKUniformBuffer_t));
+    // Instance data is not fed by the game yet (it comes with the geometry
+    // port); upload a zeroed buffer so the SSBO binding is valid.
+    memset(static_cast<uint8_t *>(dst) + instanceOffset, 0, sizeof(InstanceBuffer));
+
+    buffer->CopyFromStaging(cmd, frameIndex, instanceOffset + sizeof(InstanceBuffer));
 }
 
 VkDescriptorSet GlobalUniformQ2::GetDescSet() const
