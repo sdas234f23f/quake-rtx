@@ -176,6 +176,11 @@ Status legend:
   set 1 = `FramebuffersQ2`; no geometry). Output images (`IMG_FLAT_*`) are
   not displayed yet - the pass validates the Q2RTX shader pipeline and the
   UBO/image bindings end to end.
+- **Bloom (done)**: `bloom_downscale.comp` + `bloom_blur.comp` (h + v, push
+  constants per Q2RTX `compute_push_constants`) + `bloom_composite.comp`
+  via `BloomQ2`. `FramebuffersQ2` sampled descriptors now declare GENERAL
+  (Q2RTX keeps every framebuffer image in GENERAL for the whole frame);
+  `GlobalUniformQ2` fills the bloom/taa UBO fields.
 - Then swap shader files one by one; each swap is a testable step.
 
 ## License notes

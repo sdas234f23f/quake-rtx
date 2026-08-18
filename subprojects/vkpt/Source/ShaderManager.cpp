@@ -99,6 +99,9 @@ static ShaderModuleDefinition G_SHADERS[] =
     // GenerateShadersQ2RTX.py into Build/q2rtx/, packed into shaders.pkz
     // under "shaders/q2rtx/..."). Added one at a time as they are swapped in.
     {"Q2CheckerboardInterleave",    "q2rtx/checkerboard_interleave.comp.spv"},
+    {"Q2BloomDownscale",            "q2rtx/bloom_downscale.comp.spv"       },
+    {"Q2BloomBlur",                 "q2rtx/bloom_blur.comp.spv"            },
+    {"Q2BloomComposite",            "q2rtx/bloom_composite.comp.spv"       },
 };
 
 

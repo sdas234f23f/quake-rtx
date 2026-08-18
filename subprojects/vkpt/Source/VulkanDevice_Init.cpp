@@ -136,6 +136,12 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         uniformQ2,
         framebuffersQ2);
 
+    bloomQ2              = std::make_shared<BloomQ2>(
+        device,
+        shaderManager,
+        uniformQ2,
+        framebuffersQ2);
+
     scene               = std::make_shared<Scene>(
         device,
         physDevice,

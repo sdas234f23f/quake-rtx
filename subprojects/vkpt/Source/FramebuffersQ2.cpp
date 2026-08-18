@@ -334,7 +334,10 @@ void FramebuffersQ2::UpdateDescriptors()
         VkDescriptorImageInfo sampled = {};
         sampled.sampler = sampler;
         sampled.imageView = images[i].sampledView;
-        sampled.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        // Q2RTX keeps every framebuffer image in GENERAL for the whole frame
+        // (imageLoad/imageStore and texelFetch/textureLod both work from it),
+        // so the sampled descriptors must declare GENERAL as well.
+        sampled.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
         VkWriteDescriptorSet writeSampled = {};
         writeSampled.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;

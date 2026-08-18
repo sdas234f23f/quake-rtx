@@ -58,6 +58,17 @@ void FillUniformBuffer(QVKUniformBuffer_t &ubo, const ShGlobalUniform &src)
     ubo.screen_image_height = ubo.height;
     ubo.inv_width           = 1.0f / static_cast<float>(ubo.width);
     ubo.inv_height          = 1.0f / static_cast<float>(ubo.height);
+
+    // Q2RTX bloom fields. taa_image == render resolution for now (no TAA
+    // upscale yet); prev_taa_output starts at 0 on the first frame, which is
+    // what Q2RTX effectively has before its first assignment.
+    ubo.bloom_intensity = 0.002f;
+    ubo.taa_image_width  = ubo.width;
+    ubo.taa_image_height = ubo.height;
+    ubo.taa_output_width  = ubo.width;
+    ubo.taa_output_height = ubo.height;
+    ubo.prev_taa_output_width  = 0;
+    ubo.prev_taa_output_height = 0;
 }
 
 } // namespace

@@ -1129,6 +1129,7 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
         // First Q2RTX shader swap (PORTING.md, S3): run
         // checkerboard_interleave.comp on the Q2 descriptor sets.
         shaderSwapQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
+        bloomQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
 
         Render(cmd, *drawInfo);
     }
