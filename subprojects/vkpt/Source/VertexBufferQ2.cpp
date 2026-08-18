@@ -149,27 +149,49 @@ void VertexBufferQ2::CreateDescriptors()
     r = vkAllocateDescriptorSets(device, &allocInfo, &descSet);
     VK_CHECKERROR(r);
 
-    // Everything points at the 4-byte null buffer for now.
+    // Everything points at the 4-byte null buffer for now. For array
+    // bindings Vulkan requires pBufferInfo to be an array of descriptorCount
+    // entries (a single pointer is only valid for descriptorCount == 1).
+    const uint32_t primCount = VERTEX_BUFFER_FIRST_MODEL + Q2_MAX_MODELS;
+
+    std::vector<VkDescriptorBufferInfo> primInfos(primCount);
+    std::vector<VkDescriptorBufferInfo> lightCountInfos(LIGHT_COUNT_HISTORY);
+    std::vector<VkDescriptorBufferInfo> lightStatsInfos(NUM_LIGHT_STATS_BUFFERS);
+
     VkDescriptorBufferInfo nullInfo = {};
     nullInfo.buffer = nullBuffer.GetBuffer();
     nullInfo.offset = 0;
     nullInfo.range = VK_WHOLE_SIZE;
 
+    for (auto &info : primInfos)
+    {
+        info = nullInfo;
+    }
+    for (auto &info : lightCountInfos)
+    {
+        info = nullInfo;
+    }
+    for (auto &info : lightStatsInfos)
+    {
+        info = nullInfo;
+    }
+
     VkWriteDescriptorSet write = {};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     write.dstSet = descSet;
     write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    write.pBufferInfo = &nullInfo;
 
     // binding 0: the whole primitive array (world, instanced, then models).
     write.dstBinding = PRIMITIVE_BUFFER_BINDING_IDX;
     write.dstArrayElement = 0;
-    write.descriptorCount = VERTEX_BUFFER_FIRST_MODEL + Q2_MAX_MODELS;
+    write.descriptorCount = primCount;
+    write.pBufferInfo = primInfos.data();
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
     // single-descriptor storage bindings.
     write.descriptorCount = 1;
     write.dstArrayElement = 0;
+    write.pBufferInfo = &nullInfo;
 
     write.dstBinding = POSITION_BUFFER_BINDING_IDX;
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
@@ -179,9 +201,11 @@ void VertexBufferQ2::CreateDescriptors()
 
     write.dstBinding = LIGHT_COUNTS_HISTORY_BUFFER_BINDING_IDX;
     write.descriptorCount = LIGHT_COUNT_HISTORY;
+    write.pBufferInfo = lightCountInfos.data();
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
     write.descriptorCount = 1;
+    write.pBufferInfo = &nullInfo;
     write.dstBinding = IQM_MATRIX_BUFFER_BINDING_IDX;
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
@@ -202,6 +226,7 @@ void VertexBufferQ2::CreateDescriptors()
     write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     write.dstBinding = LIGHT_STATS_BUFFER_BINDING_IDX;
     write.descriptorCount = NUM_LIGHT_STATS_BUFFERS;
+    write.pBufferInfo = lightStatsInfos.data();
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 }
 
