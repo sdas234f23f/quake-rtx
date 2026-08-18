@@ -80,6 +80,7 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
     cmdManager          = std::make_shared<CommandBufferManager>(device, queues);
 
     uniform             = std::make_shared<GlobalUniform>(device, memAllocator);
+    uniformQ2           = std::make_shared<GlobalUniformQ2>(device, memAllocator);
 
     swapchain           = std::make_shared<Swapchain>(device, surface, physDevice->Get(), cmdManager);
 

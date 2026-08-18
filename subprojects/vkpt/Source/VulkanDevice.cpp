@@ -1121,6 +1121,9 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
     if (renderResolution.Width() > 0 && renderResolution.Height() > 0)
     {
         FillUniform(uniform->GetData(), *drawInfo);
+        // Prepare the Q2RTX-convention UBO alongside the legacy one. Not
+        // bound to any pipeline yet (see PORTING.md, stage S2b).
+        uniformQ2->Upload(cmd, currentFrameState.GetFrameIndex(), uniform->GetData());
         Render(cmd, *drawInfo);
     }
 

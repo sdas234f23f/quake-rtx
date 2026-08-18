@@ -27,6 +27,7 @@ set(vkpt_SOURCES
     Source/Queues.cpp
     Source/Swapchain.cpp
     Source/GlobalUniform.cpp
+    Source/GlobalUniformQ2.cpp
     Source/CommandBufferManager.cpp
     Source/ShaderManager.cpp
     Source/RayTracingPipeline.cpp
