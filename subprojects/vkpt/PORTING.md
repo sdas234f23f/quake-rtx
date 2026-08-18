@@ -181,6 +181,9 @@ Status legend:
   via `BloomQ2`. `FramebuffersQ2` sampled descriptors now declare GENERAL
   (Q2RTX keeps every framebuffer image in GENERAL for the whole frame);
   `GlobalUniformQ2` fills the bloom/taa UBO fields.
+- **Compositing (done)**: `compositing.comp` (denoiser-disabled path) via
+  `CompositingQ2` - combines the lighting channels with the surface
+  parameters into `IMG_ASVGF_COLOR`.
 - Then swap shader files one by one; each swap is a testable step.
 
 ## License notes

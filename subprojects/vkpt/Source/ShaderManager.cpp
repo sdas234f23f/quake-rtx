@@ -102,6 +102,7 @@ static ShaderModuleDefinition G_SHADERS[] =
     {"Q2BloomDownscale",            "q2rtx/bloom_downscale.comp.spv"       },
     {"Q2BloomBlur",                 "q2rtx/bloom_blur.comp.spv"            },
     {"Q2BloomComposite",            "q2rtx/bloom_composite.comp.spv"       },
+    {"Q2Compositing",               "q2rtx/compositing.comp.spv"          },
 };
 
 

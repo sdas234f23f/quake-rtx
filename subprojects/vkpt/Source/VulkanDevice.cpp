@@ -1130,6 +1130,7 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
         // checkerboard_interleave.comp on the Q2 descriptor sets.
         shaderSwapQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         bloomQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
+        compositingQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
 
         Render(cmd, *drawInfo);
     }
