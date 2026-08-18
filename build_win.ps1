@@ -88,6 +88,19 @@ if (Test-Path (Join-Path $shaderOutDir "*.spv")) {
     Copy-Item (Join-Path $shaderOutDir "*.spv") $shadersOut -Force
 }
 
+# Q2RTX material overrides: deploy the repo's materials/*.mat (VCS source of
+# truth at subprojects/vkpt/Source/materials) into the game dir. The .pkz must
+# NOT contain ovrd.mat - the material loader checks .pkz archives first, so a
+# stale copy there would win over this deployed loose file.
+$matSrcDir = Join-Path $PSScriptRoot "subprojects\vkpt\Source\materials"
+if (Test-Path $matSrcDir) {
+    $matsOut = Join-Path $gameDir "materials"
+    if (-not (Test-Path $matsOut)) {
+        New-Item -ItemType Directory -Path $matsOut -Force | Out-Null
+    }
+    Copy-Item (Join-Path $matSrcDir "*.mat") $matsOut -Force
+}
+
 # Runtime configs/textures (checked in under ovrd/): texture_custom_info.txt,
 # world_custom_lights.txt, world_custom_portals.txt, WaterNormal_n.ktx2.
 $ovrdSrc = Join-Path $PSScriptRoot "ovrd"
