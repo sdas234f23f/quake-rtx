@@ -476,6 +476,8 @@ static void RT_UploadAllDlights (void)
 		RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &info);
 		RG_CHECK (r);
 
+		RT_DebugDrawLightBox (info.position.data, info.radius);
+
 		// register for the per-cluster light lists; the native dlight radius
 		// is the influence radius (keeps muzzle flashes/explosions local)
 		RT_ClusterLightAdd (info.uniqueID, l->origin, l->radius);

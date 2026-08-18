@@ -975,6 +975,10 @@ void RT_CustomLights_AddCmd (void);
 void RT_CustomLights_RemoveCmd (void);
 void RT_UploadAllWorldModelLights (void);
 
+// rt_debug_lights 1: wireframe of the generated light sources (green, on top)
+void RT_DebugDrawLightBox (const vec3_t center, float radius);
+void RT_DebugDrawLightTriangle (const float positions[3][3]);
+
 void RT_ParseTeleports (void);
 void RT_UploadAllTeleports (void);
 void RT_PrintNearestPortal (void);

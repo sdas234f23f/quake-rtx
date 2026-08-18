@@ -333,6 +333,8 @@ void RT_DrawSpriteModel (rt_cb_context_t *cbx, entity_t *e, int entuniqueid)
 
 		RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &light_info);
 		RG_CHECK (r);
+
+		RT_DebugDrawLightBox (light_info.position.data, light_info.radius);
 	}
 
 	if (is_rasterized)

@@ -678,6 +678,8 @@ void RT_UploadAllElights ()
 			RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &info);
 			RG_CHECK (r);
 
+			RT_DebugDrawLightBox (info.position.data, info.radius);
+
 			// Flickering (lightstyle) lights are registered only in the clusters
 			// within their native-style influence radius. Otherwise a bright
 			// flickering torch is sampled by every cluster in its PVS and the

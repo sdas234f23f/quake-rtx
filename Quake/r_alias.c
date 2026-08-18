@@ -630,6 +630,8 @@ static void RT_GL_DrawAliasFrame (
 
 		RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &light_info);
 		RG_CHECK (r);
+
+		RT_DebugDrawLightBox (light_info.position.data, light_info.radius);
 	}
 
 	assert ((!isviewer && !isfirstperson) || (isviewer && !isfirstperson) || (!isviewer && isfirstperson));

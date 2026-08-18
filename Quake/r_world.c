@@ -1309,6 +1309,7 @@ extern cvar_t rt_wlight_radius;
 extern cvar_t rt_brush_rough;
 extern cvar_t rt_brush_metal;
 extern cvar_t rt_reflrefr_depth;
+extern cvar_t rt_debug_lights;
 
 // quadrilateral area-light shapes on the floor/wall grid are converted to
 // spherical lights
@@ -2230,8 +2231,219 @@ void RT_CustomLights_RemoveCmd (void)
 	}
 }
 
+// ------------------------------------------------------------------------- //
+// Debug view (rt_debug_lights 1): wireframe of the generated light sources,
+// so it's visible how the emissive materials were converted into lights.
+//  - wire box  : sphere light generated from an emissive surface (radius)
+//  - wire tri  : the original emissive light triangle (poly -> sphere source)
+//  - color     : bright green, drawn in the swapchain pass = on top of all
+// ------------------------------------------------------------------------- //
+
+#define RT_DEBUG_LIGHT_WIRE_SCALE 8.0f
+#define RT_DEBUG_LIGHT_COLOR      0xFF00FF00u
+
+void RT_DebugDrawLightBox (const vec3_t center, float radius)
+{
+	extern cvar_t rt_debug_lights;
+	if (!CVAR_TO_BOOL (rt_debug_lights))
+	{
+		return;
+	}
+
+	const static uint32_t box_indices[24] = {0, 1, 2, 3, 4, 5, 6, 7, 0, 4, 1, 5, 2, 6, 3, 7, 0, 2, 1, 3, 4, 6, 5, 7};
+
+	const float rr = radius * RT_DEBUG_LIGHT_WIRE_SCALE;
+
+	RgVertex vertices[8] = {0};
+
+	for (int i = 0; i < 8; i++)
+	{
+		vertices[i].position[0] = center[0] + (((i % 2) < 1) ? -rr : rr);
+		vertices[i].position[1] = center[1] + (((i % 4) < 2) ? -rr : rr);
+		vertices[i].position[2] = center[2] + (((i % 8) < 4) ? -rr : rr);
+		vertices[i].packedColor = RT_DEBUG_LIGHT_COLOR;
+	}
+
+	RgRasterizedGeometryUploadInfo info = {
+		.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_SWAPCHAIN,
+		.vertexCount = countof (vertices),
+		.pVertices = vertices,
+		.indexCount = countof (box_indices),
+		.pIndices = box_indices,
+		.transform = RT_TRANSFORM_IDENTITY,
+		.color = RT_COLOR_WHITE,
+		.material = RG_NO_MATERIAL,
+		.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_FORCE_LINE_LIST,
+		.blendFuncSrc = 0,
+		.blendFuncDst = 0,
+	};
+
+	RgResult res = rgUploadRasterizedGeometry (vulkan_globals_rt.instance, &info, NULL, NULL);
+	RG_CHECK (res);
+}
+
+void RT_DebugDrawLightTriangle (const float positions[3][3])
+{
+	extern cvar_t rt_debug_lights;
+	if (!CVAR_TO_BOOL (rt_debug_lights))
+	{
+		return;
+	}
+
+	const static uint32_t tri_indices[6] = {0, 1, 1, 2, 2, 0};
+
+	// scale around the centroid so the small emissive surfaces are visible
+	vec3_t centroid = {0, 0, 0};
+	for (int k = 0; k < 3; k++)
+	{
+		VectorAdd (centroid, positions[k], centroid);
+	}
+	VectorScale (centroid, 1.0f / 3.0f, centroid);
+
+	RgVertex vertices[3] = {0};
+
+	for (int i = 0; i < 3; i++)
+	{
+		vertices[i].position[0] = centroid[0] + (positions[i][0] - centroid[0]) * RT_DEBUG_LIGHT_WIRE_SCALE;
+		vertices[i].position[1] = centroid[1] + (positions[i][1] - centroid[1]) * RT_DEBUG_LIGHT_WIRE_SCALE;
+		vertices[i].position[2] = centroid[2] + (positions[i][2] - centroid[2]) * RT_DEBUG_LIGHT_WIRE_SCALE;
+		vertices[i].packedColor = RT_DEBUG_LIGHT_COLOR;
+	}
+
+	RgRasterizedGeometryUploadInfo info = {
+		.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_SWAPCHAIN,
+		.vertexCount = countof (vertices),
+		.pVertices = vertices,
+		.indexCount = countof (tri_indices),
+		.pIndices = tri_indices,
+		.transform = RT_TRANSFORM_IDENTITY,
+		.color = RT_COLOR_WHITE,
+		.material = RG_NO_MATERIAL,
+		.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_FORCE_LINE_LIST,
+		.blendFuncSrc = 0,
+		.blendFuncDst = 0,
+	};
+
+	RgResult res = rgUploadRasterizedGeometry (vulkan_globals_rt.instance, &info, NULL, NULL);
+	RG_CHECK (res);
+}
+
+static void RT_EmitLightWireSphere (const vec3_t center, float radius, uint32_t packedColor)
+{
+	// three axis-aligned rings (XY, XZ, YZ) - reads clearly as a wireframe ball
+	const int segments = 20;
+	const int ringCount = 3;
+
+	RgVertex  vertices[3 * 20] = {0};
+	uint32_t  indices[3 * 20 * 2];
+
+	int vi = 0;
+	for (int ring = 0; ring < ringCount; ring++)
+	{
+		for (int s = 0; s < segments; s++)
+		{
+			const float a = (float)s / (float)segments * (float)M_PI * 2.0f;
+			const float ca = (float)cos (a);
+			const float sa = (float)sin (a);
+
+			RgVertex *v = &vertices[vi + s];
+			v->position[0] = center[0];
+			v->position[1] = center[1];
+			v->position[2] = center[2];
+			v->packedColor = packedColor;
+
+			switch (ring)
+			{
+			case 0: v->position[0] += radius * ca; v->position[1] += radius * sa; break; // XY
+			case 1: v->position[0] += radius * ca; v->position[2] += radius * sa; break; // XZ
+			case 2: v->position[1] += radius * ca; v->position[2] += radius * sa; break; // YZ
+			}
+		}
+		vi += segments;
+	}
+
+	for (int ring = 0; ring < ringCount; ring++)
+	{
+		for (int s = 0; s < segments; s++)
+		{
+			const int base = ring * segments;
+			indices[(ring * segments + s) * 2 + 0] = base + s;
+			indices[(ring * segments + s) * 2 + 1] = base + ((s + 1) % segments);
+		}
+	}
+
+	RgRasterizedGeometryUploadInfo info = {
+		.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_SWAPCHAIN,
+		.vertexCount = countof (vertices),
+		.pVertices = vertices,
+		.indexCount = countof (indices),
+		.pIndices = indices,
+		.transform = RT_TRANSFORM_IDENTITY,
+		.color = RT_COLOR_WHITE,
+		.material = RG_NO_MATERIAL,
+		.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_FORCE_LINE_LIST,
+		.blendFuncSrc = 0,
+		.blendFuncDst = 0,
+	};
+
+	RgResult r = rgUploadRasterizedGeometry (vulkan_globals_rt.instance, &info, NULL, NULL);
+	RG_CHECK (r);
+}
+
+static void RT_DebugDrawWorldLights (void)
+{
+	// sphere lights generated from the emissive surfaces (with their radius)
+	for (int i = 0; i < rt_wldlights_sph_count; i++)
+	{
+		const RgSphericalLightUploadInfo *l = &rt_wldlights_sph[i];
+
+		vec3_t center;
+		VectorCopy (l->position.data, center);
+
+		RT_DebugDrawLightBox (center, l->radius);
+	}
+
+	// the original emissive light triangles (the poly -> sphere conversion source)
+	for (int i = 0; i < rt_wldlights_tri_count; i++)
+	{
+		const RgPolygonalLightUploadInfo *l = &rt_wldlights_tri[i];
+
+		float tri[3][3] = {
+			{l->positions[0].data[0], l->positions[0].data[1], l->positions[0].data[2]},
+			{l->positions[1].data[0], l->positions[1].data[1], l->positions[1].data[2]},
+			{l->positions[2].data[0], l->positions[2].data[1], l->positions[2].data[2]},
+		};
+
+		RT_DebugDrawLightTriangle (tri);
+	}
+
+	// custom lights (world_custom_lights.txt)
+	for (int i = 0; i < rt_customlights_curr_count; i++)
+	{
+		const rt_worldcustomlight_t *src = &rt_customlights_all[rt_customlights_curr[i]];
+
+		if (src->deleted)
+		{
+			continue;
+		}
+
+		vec3_t center;
+		VectorCopy (src->position.data, center);
+
+		RT_EmitLightWireSphere (center,
+		                        METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_wlight_radius)) * RT_DEBUG_LIGHT_WIRE_SCALE,
+		                        RT_DEBUG_LIGHT_COLOR);
+	}
+}
+
 void RT_UploadAllWorldModelLights (void)
 {
+	// debug view: wireframe of the generated light sources
+	if (CVAR_TO_BOOL (rt_debug_lights))
+	{
+		RT_DebugDrawWorldLights ();
+	}
+
 #if RT_USE_SPHERE_INSTEAD_OF_POLY
 	for (int i = 0; i < rt_wldlights_sph_count; i++)
 	{
