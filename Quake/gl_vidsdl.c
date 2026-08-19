@@ -262,6 +262,7 @@ qboolean           request_shaders_reload = false;
 	\
 	CVAR_DEF_T (rt_debugflags, "0") \
 	CVAR_DEF_T (rt_debug_lights, "0") \
+	CVAR_DEF_T (rt_q2bridge, "1") \
 
 
 #define CVAR_DEF_T(name, default_value) cvar_t name = {#name, default_value, CVAR_ARCHIVE};
@@ -4329,6 +4330,9 @@ static void RT_GL_EndRenderingTask (rt_end_rendering_parms_t *parms)
 	};
 	// the Q2RTX-style core is the only RT renderer
 	debug_params.drawFlags |= RG_DEBUG_DRAW_Q2RTX_CORE_BIT;
+	// G4: when enabled, the on-screen image comes from the Q2RTX chain
+	if (CVAR_TO_BOOL (rt_q2bridge))
+		debug_params.drawFlags |= RG_DEBUG_DRAW_Q2_BRIDGE_BIT;
 
 	float cameranear = GL_GetCameraNear (DEG2RAD (r_fovx), DEG2RAD (r_fovy));
 	float camerafar = GL_GetCameraFar ();

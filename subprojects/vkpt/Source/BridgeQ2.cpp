@@ -78,50 +78,29 @@ void BlitImage(VkCommandBuffer cmd,
 } // namespace
 
 void BridgeQ2::Run(VkCommandBuffer cmd, uint32_t frameIndex,
-                   uint32_t width, uint32_t height, float frameTime)
+                   uint32_t width, uint32_t height, float frameTime, bool enabled)
 {
-    if (width == 0 || height == 0)
+    if (!enabled || width == 0 || height == 0)
     {
         return;
     }
 
-    VkImage legacyPreFinal = framebuffers->GetImage(FramebufferImageIndex::FB_IMAGE_INDEX_PRE_FINAL, frameIndex);
     VkImage legacyFinal = framebuffers->GetImage(FramebufferImageIndex::FB_IMAGE_INDEX_FINAL, frameIndex);
     VkImage q2TaaOutput = framebuffersQ2->GetImage(VKPT_IMG_TAA_OUTPUT);
 
-    if (legacyPreFinal == VK_NULL_HANDLE || legacyFinal == VK_NULL_HANDLE || q2TaaOutput == VK_NULL_HANDLE)
+    if (legacyFinal == VK_NULL_HANDLE || q2TaaOutput == VK_NULL_HANDLE)
     {
         return;
     }
 
-    // 1. legacy PRE_FINAL -> Q2 IMG_TAA_OUTPUT
-    BarrierImage(cmd, legacyPreFinal,
-                 VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                 VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    BarrierImage(cmd, q2TaaOutput,
-                 VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                 VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-
-    BlitImage(cmd, legacyPreFinal, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-              q2TaaOutput, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, width, height);
-
-    // back to GENERAL for the compute passes
-    BarrierImage(cmd, legacyPreFinal,
-                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                 VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-    BarrierImage(cmd, q2TaaOutput,
-                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-
-    // 2. Q2RTX post-processing on TAA_OUTPUT
+    // The Q2RTX chain (primary rays -> ASVGF -> compositing -> TAA upscale)
+    // already produced TAA_OUTPUT in DrawFrame. Finish with bloom + tone
+    // mapping, then copy the result into the legacy FINAL image so the rest
+    // of the legacy pipeline (upscale, effects, present) shows it.
     bloomQ2->Dispatch(cmd, width, height);
     toneMappingQ2->Dispatch(cmd, width, height, frameTime);
 
-    // 3. Q2 IMG_TAA_OUTPUT -> legacy FINAL
+    // Q2 IMG_TAA_OUTPUT -> legacy FINAL
     BarrierImage(cmd, q2TaaOutput,
                  VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,

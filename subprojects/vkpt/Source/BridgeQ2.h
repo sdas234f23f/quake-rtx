@@ -1,13 +1,14 @@
-// Control-point bridge between the legacy renderer and the Q2RTX
-// post-processing chain (PORTING.md, S3 "bridge").
+// Control-point bridge between the legacy renderer and the Q2RTX frame
+// (PORTING.md, G4 "bridge switch").
 //
-// Until the Q2RTX ray tracing core produces its own image, we copy the
-// legacy renderer's HDR result (FB_IMAGE_INDEX_PRE_FINAL) into the Q2RTX
-// IMG_TAA_OUTPUT, run the already-swapped Q2RTX post-processing (bloom +
-// tone mapping) on it, and blit the result back into the legacy
-// FB_IMAGE_INDEX_FINAL so the rest of the legacy pipeline (upscale,
-// effects, present) shows it. This makes the Q2RTX post-processing visible
-// and gives a reference point for the remaining swaps.
+// The full Q2RTX chain (primary rays -> ASVGF denoise -> compositing ->
+// checkerboard interleave -> TAA upscale) runs in DrawFrame and produces
+// IMG_TAA_OUTPUT. When the "rt_q2bridge" cvar is enabled (host flag
+// RG_DEBUG_DRAW_Q2_BRIDGE_BIT), BridgeQ2 finishes the Q2RTX post-processing
+// (bloom + tone mapping) on that image and blits the result into the legacy
+// FB_IMAGE_INDEX_FINAL, so the rest of the legacy pipeline (upscale,
+// effects, present) shows the Q2RTX frame. When disabled, the legacy
+// renderer's own image is displayed unchanged (reference point).
 
 #pragma once
 
@@ -36,11 +37,11 @@ public:
     BridgeQ2 &operator=(const BridgeQ2 &other) = delete;
     BridgeQ2 &operator=(BridgeQ2 &&other) noexcept = delete;
 
-    // Copies the legacy PRE_FINAL image into Q2 IMG_TAA_OUTPUT, runs the
-    // Q2RTX bloom + tone mapping, and blits the result into the legacy
-    // FINAL image.
+    // When enabled, runs bloom + tone mapping on the Q2RTX TAA_OUTPUT image
+    // and blits the result into the legacy FINAL image. Otherwise does
+    // nothing (the legacy image stays on screen).
     void Run(VkCommandBuffer cmd, uint32_t frameIndex,
-             uint32_t width, uint32_t height, float frameTime);
+             uint32_t width, uint32_t height, float frameTime, bool enabled);
 
 private:
     VkDevice device;

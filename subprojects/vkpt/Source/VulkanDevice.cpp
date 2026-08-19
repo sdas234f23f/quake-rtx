@@ -926,11 +926,16 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
     imageComposition->Finalize(
         cmd, frameIndex, uniform.get(), tonemapping.get(), volumetric.get() );
 
-    // Control point: bridge the legacy HDR image through the Q2RTX
-    // post-processing chain (bloom + tone mapping) and back into FINAL.
+    // Control point: when rt_q2bridge is on, the Q2RTX chain output
+    // (TAA_OUTPUT, already produced in DrawFrame) is blitted into the legacy
+    // FINAL image after bloom + tone mapping, so the screen shows the Q2RTX
+    // frame. When off, the legacy renderer's image is shown unchanged.
+    bool bridgeEnabled = drawInfo.pDebugParams != nullptr &&
+                         (drawInfo.pDebugParams->drawFlags & RG_DEBUG_DRAW_Q2_BRIDGE_BIT) != 0;
     bridgeQ2->Run(cmd, frameIndex,
                   renderResolution.Width(), renderResolution.Height(),
-                  static_cast<float>(currentFrameTime - previousFrameTime));
+                  static_cast<float>(currentFrameTime - previousFrameTime),
+                  bridgeEnabled);
 
 
     bool enableBloom = drawInfo.pBloomParams == nullptr || (drawInfo.pBloomParams != nullptr && drawInfo.pBloomParams->bloomIntensity > 0.0f);
@@ -1132,25 +1137,22 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
         uniformQ2->Upload(cmd, currentFrameState.GetFrameIndex(), uniform->GetData());
         framebuffersQ2->Create(renderResolution.Width(), renderResolution.Height(), 1);
 
-        // First Q2RTX shader swap (PORTING.md, S3): run
-        // checkerboard_interleave.comp on the Q2 descriptor sets.
-        shaderSwapQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
-
-        // Q2RTX primary rays (PORTING.md, G3): trace against the Q2RTX TLAS
-        // into the Q2RTX G-buffer. Invisible until G4 switches the source.
+        // Q2RTX frame (PORTING.md, G4): sky resolve, primary rays into the
+        // G-buffer, ASVGF denoise (gradient -> temporal -> LF -> a-trous),
+        // compositing, checkerboard interleave, TAA upscale. Bloom + tone
+        // mapping run inside the BridgeQ2 control point, on the final
+        // TAA_OUTPUT image.
+        skyBufferResolveQ2->Dispatch(cmd);
         pathTracerQ2->DispatchPrimaryRays(cmd, renderResolution.Width(), renderResolution.Height());
 
-        bloomQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
-        compositingQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
-        asvgfTemporalQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         asvgfGradientImgQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
+        asvgfTemporalQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         asvgfLfQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         asvgfAtrousQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
-        asvgfTaaQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
-        skyBufferResolveQ2->Dispatch(cmd);
 
-        // bloom + tone mapping run inside the BridgeQ2 control point, after
-        // the legacy image is copied into the Q2RTX image.
+        compositingQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
+        shaderSwapQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
+        asvgfTaaQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
 
         Render(cmd, *drawInfo);
     }

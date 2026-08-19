@@ -946,6 +946,9 @@ typedef enum RgDebugDrawFlagBits
     RG_DEBUG_DRAW_Q2RTX_CORE_BIT = 1024,
     // Internal: shows the raw god rays buffer (volumetric sunlight).
     RG_DEBUG_DRAW_GOD_RAYS_BIT = 2048,
+    // Internal: switch the on-screen source to the Q2RTX chain output. The
+    // host sets this bit when the "rt_q2bridge" cvar is enabled.
+    RG_DEBUG_DRAW_Q2_BRIDGE_BIT = 4096,
 } RgDebugDrawFlagBits;
 typedef RgFlags RgDebugDrawFlags;
 
