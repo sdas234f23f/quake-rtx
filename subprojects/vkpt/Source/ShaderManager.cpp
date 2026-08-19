@@ -106,6 +106,7 @@ static ShaderModuleDefinition G_SHADERS[] =
     {"Q2AsvgfTemporal",             "q2rtx/asvgf_temporal.comp.spv"       },
     {"Q2AsvgfGradientImg",          "q2rtx/asvgf_gradient_img.comp.spv"    },
     {"Q2AsvgfLf",                   "q2rtx/asvgf_lf.comp.spv"             },
+    {"Q2AsvgfAtrous",               "q2rtx/asvgf_atrous.comp.spv"         },
 };
 
 

@@ -197,6 +197,10 @@ Status legend:
   texture (Q2RTX-style 256x256 R16 x512 array). This unblocks the remaining
   set 0+1 shaders that sample `TEX_BLUE_NOISE` (asvgf_atrous, god_rays,
   tone_mapping_apply).
+- **ASVGF a-trous (done)**: `asvgf_atrous.comp` via `AsvgfAtrousQ2` - 4
+  spatial wavelet iterations, each a pipeline specialized on
+  `spec_iteration` 0..3 (with `spec_enable_lf = 1`); the last iteration
+  also composites into `IMG_ASVGF_COLOR`.
 - Then swap shader files one by one; each swap is a testable step.
 
 ## License notes

@@ -1134,6 +1134,7 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
         asvgfTemporalQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         asvgfGradientImgQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         asvgfLfQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
+        asvgfAtrousQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
 
         Render(cmd, *drawInfo);
     }
