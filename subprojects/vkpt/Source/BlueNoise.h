@@ -46,6 +46,7 @@ public:
 
     VkDescriptorSetLayout GetDescSetLayout() const;
     VkDescriptorSet GetDescSet() const;
+    VkImageView GetImageView() const;
 
 private:
     void CreateDescriptors();

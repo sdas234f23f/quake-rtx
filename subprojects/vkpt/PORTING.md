@@ -192,6 +192,11 @@ Status legend:
 - **ASVGF LF filter (done)**: `asvgf_lf.comp` via `AsvgfLfQ2` - 4 LF wavelet
   iterations driven by an iteration push constant, ping-ponging the
   ATROUS_PING/PONG LF images.
+- **Blue noise (done)**: `FramebuffersQ2` now has the
+  `BINDING_OFFSET_BLUE_NOISE` binding, fed from the existing `BlueNoise`
+  texture (Q2RTX-style 256x256 R16 x512 array). This unblocks the remaining
+  set 0+1 shaders that sample `TEX_BLUE_NOISE` (asvgf_atrous, god_rays,
+  tone_mapping_apply).
 - Then swap shader files one by one; each swap is a testable step.
 
 ## License notes

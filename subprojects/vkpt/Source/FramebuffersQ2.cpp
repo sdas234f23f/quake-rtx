@@ -41,6 +41,7 @@ FramebuffersQ2::FramebuffersQ2(VkDevice _device,
     whiteImage(VK_NULL_HANDLE),
     whiteImageView(VK_NULL_HANDLE),
     whiteMemory(VK_NULL_HANDLE),
+    blueNoiseImageView(VK_NULL_HANDLE),
     descPool(VK_NULL_HANDLE),
     descSetLayout(VK_NULL_HANDLE),
     descSet(VK_NULL_HANDLE)
@@ -229,7 +230,8 @@ void FramebuffersQ2::DestroyWhiteTexture()
 
 void FramebuffersQ2::CreateDescriptors()
 {
-    const uint32_t bindingCount = 1 + NUM_IMAGES + NUM_IMAGES;
+    // binding 0 (global texture array) + IMG_* + TEX_* + BLUE_NOISE.
+    const uint32_t bindingCount = 1 + NUM_IMAGES + NUM_IMAGES + 1;
 
     std::vector<VkDescriptorSetLayoutBinding> bindings(bindingCount);
 
@@ -253,6 +255,12 @@ void FramebuffersQ2::CreateDescriptors()
         bindings[1 + NUM_IMAGES + i].stageFlags = VK_SHADER_STAGE_ALL;
     }
 
+    // blue noise array (TEX_BLUE_NOISE)
+    bindings[1 + NUM_IMAGES + NUM_IMAGES].binding = BINDING_OFFSET_BLUE_NOISE;
+    bindings[1 + NUM_IMAGES + NUM_IMAGES].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1 + NUM_IMAGES + NUM_IMAGES].descriptorCount = 1;
+    bindings[1 + NUM_IMAGES + NUM_IMAGES].stageFlags = VK_SHADER_STAGE_ALL;
+
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     layoutInfo.bindingCount = bindings.size();
@@ -261,9 +269,9 @@ void FramebuffersQ2::CreateDescriptors()
     VkResult r = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descSetLayout);
     VK_CHECKERROR(r);
 
-    VkDescriptorPoolSize poolSizes[3] = {};
+    VkDescriptorPoolSize poolSizes[2] = {};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = NUM_GLOBAL_TEXTURES + NUM_IMAGES;
+    poolSizes[0].descriptorCount = NUM_GLOBAL_TEXTURES + NUM_IMAGES + 1; // + blue noise
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     poolSizes[1].descriptorCount = NUM_IMAGES;
 
@@ -349,7 +357,31 @@ void FramebuffersQ2::UpdateDescriptors()
         writes.push_back(writeSampled);
     }
 
+    // blue noise array
+    {
+        VkDescriptorImageInfo blueNoise = {};
+        blueNoise.sampler = sampler;
+        blueNoise.imageView = blueNoiseImageView;
+        blueNoise.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet write = {};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descSet;
+        write.dstBinding = BINDING_OFFSET_BLUE_NOISE;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &blueNoise;
+        writes.push_back(write);
+    }
+
     vkUpdateDescriptorSets(device, writes.size(), writes.data(), 0, nullptr);
+}
+
+void FramebuffersQ2::SetBlueNoiseImageView(VkImageView view)
+{
+    blueNoiseImageView = view;
+    // The descriptor set already exists; re-write the blue noise binding.
+    UpdateDescriptors();
 }
 
 VkDescriptorSet FramebuffersQ2::GetDescSet() const

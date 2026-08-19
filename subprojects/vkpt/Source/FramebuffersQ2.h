@@ -33,6 +33,10 @@ public:
     // (Re)creates the framebuffer images when the render size changes.
     void Create(uint32_t renderWidth, uint32_t renderHeight, uint32_t deviceCount);
 
+    // Binds the Q2RTX blue noise texture into this set at
+    // BINDING_OFFSET_BLUE_NOISE (owned by BlueNoise; only the view is kept).
+    void SetBlueNoiseImageView(VkImageView blueNoiseView);
+
     VkDescriptorSet GetDescSet() const;
     VkDescriptorSetLayout GetDescSetLayout() const;
     VkImage GetImage(int index) const;
@@ -69,6 +73,7 @@ private:
     VkImage      whiteImage;
     VkImageView  whiteImageView;
     VkDeviceMemory whiteMemory;
+    VkImageView  blueNoiseImageView;
 
     VkDescriptorPool      descPool;
     VkDescriptorSetLayout descSetLayout;

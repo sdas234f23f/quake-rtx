@@ -219,6 +219,11 @@ VkDescriptorSet BlueNoise::GetDescSet() const
     return descSet;
 }
 
+VkImageView BlueNoise::GetImageView() const
+{
+    return blueNoiseImagesView;
+}
+
 void BlueNoise::CreateDescriptors()
 {
     VkResult r;

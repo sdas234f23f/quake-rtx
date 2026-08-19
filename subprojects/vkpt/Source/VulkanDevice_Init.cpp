@@ -107,6 +107,10 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         cmdManager, 
         userFileLoad);
 
+    // Share the blue noise texture with the Q2RTX descriptor set
+    // (BINDING_OFFSET_BLUE_NOISE).
+    framebuffersQ2->SetBlueNoiseImageView(blueNoise->GetImageView());
+
     textureManager      = std::make_shared<TextureManager>(
         device, 
         memAllocator,
