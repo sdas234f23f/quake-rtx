@@ -38,6 +38,7 @@
 #include "VertexBufferQ2.h"
 #include "GeometryQ2.h"
 #include "ASManagerQ2.h"
+#include "PathTracerQ2.h"
 #include "PathTracer.h"
 #include "Rasterizer.h"
 #include "Framebuffers.h"
@@ -188,6 +189,7 @@ private:
     std::shared_ptr<VertexBufferQ2>         vertexBufferQ2;
     std::shared_ptr<GeometryQ2>             geometryQ2;
     std::shared_ptr<ASManagerQ2>            asManagerQ2;
+    std::shared_ptr<PathTracerQ2>           pathTracerQ2;
     std::shared_ptr<ShaderSwapQ2>           shaderSwapQ2;
     std::shared_ptr<BloomQ2>                bloomQ2;
     std::shared_ptr<CompositingQ2>          compositingQ2;

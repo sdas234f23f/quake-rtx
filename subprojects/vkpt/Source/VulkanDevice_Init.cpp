@@ -85,6 +85,9 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
     geometryQ2          = std::make_shared<GeometryQ2>(device, memAllocator, cmdManager, vertexBufferQ2);
     asManagerQ2         = std::make_shared<ASManagerQ2>(device, physDevice, memAllocator, cmdManager, geometryQ2, uniformQ2);
 
+    // Created after all the descriptor set owners so the pipeline layout
+    // can reference them; shaderManager is created further below.
+
     swapchain           = std::make_shared<Swapchain>(device, surface, physDevice->Get(), cmdManager);
 
     // for world samplers with modifyable lod biad
@@ -135,6 +138,19 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         device,
         info->pShaderFolderPath,
         userFileLoad);
+
+    // Q2RTX path tracer: needs shaderManager plus all the descriptor set
+    // owners (ASManagerQ2, GlobalUniformQ2, FramebuffersQ2, VertexBufferQ2).
+    pathTracerQ2        = std::make_shared<PathTracerQ2>(
+        device,
+        physDevice,
+        memAllocator,
+        cmdManager,
+        shaderManager.get(),
+        asManagerQ2,
+        uniformQ2,
+        framebuffersQ2,
+        vertexBufferQ2);
 
     shaderSwapQ2        = std::make_shared<ShaderSwapQ2>(
         device,

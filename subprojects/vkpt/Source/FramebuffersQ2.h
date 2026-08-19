@@ -55,6 +55,8 @@ private:
     void CreateImageEntry(int index, const VkImageCreateInfo &info, const char *name);
     void CreateWhiteTexture();
     void DestroyWhiteTexture();
+    void CreatePlaceholders();
+    void DestroyPlaceholders();
     void CreateDescriptors();
     void UpdateDescriptors();
 
@@ -74,6 +76,15 @@ private:
     VkImageView  whiteImageView;
     VkDeviceMemory whiteMemory;
     VkImageView  blueNoiseImageView;
+
+    // 1x1 placeholder images for the sky/terrain bindings (138..148) used
+    // by the path tracer shaders; real data comes with later port stages.
+    VkImage      placeholderCubeImage;
+    VkImageView  placeholderCubeView;
+    VkImage      placeholder3DImage;
+    VkImageView  placeholder3DView;
+    VkImage      placeholderStorageImage;
+    VkImageView  placeholderStorageView;
 
     VkDescriptorPool      descPool;
     VkDescriptorSetLayout descSetLayout;

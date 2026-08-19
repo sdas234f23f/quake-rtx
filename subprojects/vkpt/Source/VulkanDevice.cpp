@@ -1135,6 +1135,11 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
         // First Q2RTX shader swap (PORTING.md, S3): run
         // checkerboard_interleave.comp on the Q2 descriptor sets.
         shaderSwapQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
+
+        // Q2RTX primary rays (PORTING.md, G3): trace against the Q2RTX TLAS
+        // into the Q2RTX G-buffer. Invisible until G4 switches the source.
+        pathTracerQ2->DispatchPrimaryRays(cmd, renderResolution.Width(), renderResolution.Height());
+
         bloomQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         compositingQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         asvgfTemporalQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());

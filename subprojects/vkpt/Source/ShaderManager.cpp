@@ -112,6 +112,15 @@ static ShaderModuleDefinition G_SHADERS[] =
     {"Q2ToneMappingApply",          "q2rtx/tone_mapping_apply.comp.spv"    },
     {"Q2AsvgfTaa",                  "q2rtx/asvgf_taau.comp.spv"           },
     {"Q2SkyBufferResolve",          "q2rtx/sky_buffer_resolve.comp.spv"    },
+    {"Q2PrimaryRays",               "q2rtx/primary_rays.rgen.spv"         },
+    {"Q2PathTracerRmiss",           "q2rtx/path_tracer.rmiss.spv"         },
+    {"Q2PathTracerRchit",           "q2rtx/path_tracer.rchit.spv"         },
+    {"Q2PathTracerMaskedRahit",     "q2rtx/path_tracer_masked.rahit.spv"  },
+    {"Q2PathTracerParticleRahit",   "q2rtx/path_tracer_particle.rahit.spv"},
+    {"Q2PathTracerExplosionRahit",  "q2rtx/path_tracer_explosion.rahit.spv"},
+    {"Q2PathTracerSpriteRahit",     "q2rtx/path_tracer_sprite.rahit.spv"  },
+    {"Q2PathTracerBeamRahit",       "q2rtx/path_tracer_beam.rahit.spv"    },
+    {"Q2PathTracerBeamRint",        "q2rtx/path_tracer_beam.rint.spv"     },
 };
 
 

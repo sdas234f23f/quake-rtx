@@ -47,6 +47,9 @@ public:
     // Called after GeometryQ2::SubmitStatic (world buffer ready).
     void SubmitStatic();
 
+    // Whether a TLAS has been built (level geometry submitted).
+    bool HasTLAS() const;
+
     VkDescriptorSet GetDescSet() const;
     VkDescriptorSetLayout GetDescSetLayout() const;
 

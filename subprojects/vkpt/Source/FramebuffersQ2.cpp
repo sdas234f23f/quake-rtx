@@ -42,6 +42,12 @@ FramebuffersQ2::FramebuffersQ2(VkDevice _device,
     whiteImageView(VK_NULL_HANDLE),
     whiteMemory(VK_NULL_HANDLE),
     blueNoiseImageView(VK_NULL_HANDLE),
+    placeholderCubeImage(VK_NULL_HANDLE),
+    placeholderCubeView(VK_NULL_HANDLE),
+    placeholder3DImage(VK_NULL_HANDLE),
+    placeholder3DView(VK_NULL_HANDLE),
+    placeholderStorageImage(VK_NULL_HANDLE),
+    placeholderStorageView(VK_NULL_HANDLE),
     descPool(VK_NULL_HANDLE),
     descSetLayout(VK_NULL_HANDLE),
     descSet(VK_NULL_HANDLE)
@@ -68,11 +74,13 @@ FramebuffersQ2::FramebuffersQ2(VkDevice _device,
     VK_CHECKERROR(r);
 
     CreateDescriptors();
+    CreatePlaceholders();
 }
 
 FramebuffersQ2::~FramebuffersQ2()
 {
     DestroyImages();
+    DestroyPlaceholders();
 
     if (whiteImageView)
     {
@@ -228,6 +236,128 @@ void FramebuffersQ2::DestroyWhiteTexture()
     }
 }
 
+void FramebuffersQ2::CreatePlaceholders()
+{
+    // 1x1 cube for the samplerCube bindings (envmap, physical sky, terrain).
+    {
+        VkImageCreateInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        info.imageType = VK_IMAGE_TYPE_2D;
+        info.format = VK_FORMAT_R8G8B8A8_UNORM;
+        info.extent = { 1, 1, 1 };
+        info.mipLevels = 1;
+        info.arrayLayers = 6;
+        info.samples = VK_SAMPLE_COUNT_1_BIT;
+        info.tiling = VK_IMAGE_TILING_OPTIMAL;
+        info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+        placeholderCubeImage = allocator->CreateDstTextureImage(&info, "q2rtx cube placeholder");
+
+        VkImageViewCreateInfo viewInfo = {};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = placeholderCubeImage;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+        viewInfo.format = info.format;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.layerCount = 6;
+
+        VkResult r = vkCreateImageView(device, &viewInfo, nullptr, &placeholderCubeView);
+        VK_CHECKERROR(r);
+    }
+
+    // 1x1x1 3D image for the sampler3D bindings (sky scattering, sky clouds).
+    {
+        VkImageCreateInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        info.imageType = VK_IMAGE_TYPE_3D;
+        info.format = VK_FORMAT_R8G8B8A8_UNORM;
+        info.extent = { 1, 1, 1 };
+        info.mipLevels = 1;
+        info.arrayLayers = 1;
+        info.samples = VK_SAMPLE_COUNT_1_BIT;
+        info.tiling = VK_IMAGE_TILING_OPTIMAL;
+        info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+        placeholder3DImage = allocator->CreateDstTextureImage(&info, "q2rtx 3d placeholder");
+
+        VkImageViewCreateInfo viewInfo = {};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = placeholder3DImage;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_3D;
+        viewInfo.format = info.format;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.layerCount = 1;
+
+        VkResult r = vkCreateImageView(device, &viewInfo, nullptr, &placeholder3DView);
+        VK_CHECKERROR(r);
+    }
+
+    // 1x1 2D storage image for IMG_PHYSICAL_SKY (binding 140).
+    {
+        VkImageCreateInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        info.imageType = VK_IMAGE_TYPE_2D;
+        info.format = VK_FORMAT_R8G8B8A8_UNORM;
+        info.extent = { 1, 1, 1 };
+        info.mipLevels = 1;
+        info.arrayLayers = 1;
+        info.samples = VK_SAMPLE_COUNT_1_BIT;
+        info.tiling = VK_IMAGE_TILING_OPTIMAL;
+        info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+        placeholderStorageImage = allocator->CreateDstTextureImage(&info, "q2rtx physical sky placeholder");
+
+        VkImageViewCreateInfo viewInfo = {};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = placeholderStorageImage;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = info.format;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.layerCount = 1;
+
+        VkResult r = vkCreateImageView(device, &viewInfo, nullptr, &placeholderStorageView);
+        VK_CHECKERROR(r);
+    }
+}
+
+void FramebuffersQ2::DestroyPlaceholders()
+{
+    if (placeholderStorageView)
+    {
+        vkDestroyImageView(device, placeholderStorageView, nullptr);
+        placeholderStorageView = VK_NULL_HANDLE;
+    }
+    if (placeholderStorageImage)
+    {
+        allocator->DestroyTextureImage(placeholderStorageImage);
+        placeholderStorageImage = VK_NULL_HANDLE;
+    }
+    if (placeholder3DView)
+    {
+        vkDestroyImageView(device, placeholder3DView, nullptr);
+        placeholder3DView = VK_NULL_HANDLE;
+    }
+    if (placeholder3DImage)
+    {
+        allocator->DestroyTextureImage(placeholder3DImage);
+        placeholder3DImage = VK_NULL_HANDLE;
+    }
+    if (placeholderCubeView)
+    {
+        vkDestroyImageView(device, placeholderCubeView, nullptr);
+        placeholderCubeView = VK_NULL_HANDLE;
+    }
+    if (placeholderCubeImage)
+    {
+        allocator->DestroyTextureImage(placeholderCubeImage);
+        placeholderCubeImage = VK_NULL_HANDLE;
+    }
+}
+
 void FramebuffersQ2::CreateDescriptors()
 {
     // binding 0 (global texture array) + IMG_* + TEX_* + BLUE_NOISE.
@@ -261,6 +391,34 @@ void FramebuffersQ2::CreateDescriptors()
     bindings[1 + NUM_IMAGES + NUM_IMAGES].descriptorCount = 1;
     bindings[1 + NUM_IMAGES + NUM_IMAGES].stageFlags = VK_SHADER_STAGE_ALL;
 
+    // Sky / terrain bindings (138..148), required by the path tracer shaders
+    // (the compute shaders do not use them, but the ray tracing ones do).
+    {
+        const struct { uint32_t binding; VkDescriptorType type; } extra[] =
+        {
+            { BINDING_OFFSET_ENVMAP,             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+            { BINDING_OFFSET_PHYSICAL_SKY,       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+            { BINDING_OFFSET_PHYSICAL_SKY_IMG,   VK_DESCRIPTOR_TYPE_STORAGE_IMAGE },
+            { BINDING_OFFSET_SKY_TRANSMITTANCE,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+            { BINDING_OFFSET_SKY_SCATTERING,     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+            { BINDING_OFFSET_SKY_IRRADIANCE,     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+            { BINDING_OFFSET_SKY_CLOUDS,         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+            { BINDING_OFFSET_TERRAIN_ALBEDO,     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+            { BINDING_OFFSET_TERRAIN_NORMALS,    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+            { BINDING_OFFSET_TERRAIN_DEPTH,      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+            { BINDING_OFFSET_TERRAIN_SHADOWMAP,  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+        };
+        for (const auto &b : extra)
+        {
+            VkDescriptorSetLayoutBinding binding = {};
+            binding.binding = b.binding;
+            binding.descriptorType = b.type;
+            binding.descriptorCount = 1;
+            binding.stageFlags = VK_SHADER_STAGE_ALL;
+            bindings.push_back(binding);
+        }
+    }
+
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     layoutInfo.bindingCount = bindings.size();
@@ -271,9 +429,9 @@ void FramebuffersQ2::CreateDescriptors()
 
     VkDescriptorPoolSize poolSizes[2] = {};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = NUM_GLOBAL_TEXTURES + NUM_IMAGES + 1; // + blue noise
+    poolSizes[0].descriptorCount = NUM_GLOBAL_TEXTURES + NUM_IMAGES + 1 + 10; // + blue noise + sky/terrain
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[1].descriptorCount = NUM_IMAGES;
+    poolSizes[1].descriptorCount = NUM_IMAGES + 1; // + IMG_PHYSICAL_SKY
 
     VkDescriptorPoolCreateInfo poolInfo = {};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -297,7 +455,27 @@ void FramebuffersQ2::CreateDescriptors()
 void FramebuffersQ2::UpdateDescriptors()
 {
     std::vector<VkWriteDescriptorSet> writes;
+    // One VkDescriptorImageInfo per written descriptor. The vector is
+    // reserved so pointers into it stay valid across push_back; the previous
+    // code took the address of stack temporaries, which is undefined
+    // behaviour once the loop scope ends.
     std::vector<VkDescriptorImageInfo> imageInfos;
+    imageInfos.reserve(NUM_GLOBAL_TEXTURES + 2 * NUM_IMAGES + 12);
+
+    auto AddWrite = [&](uint32_t binding, VkDescriptorType type, const VkDescriptorImageInfo &info)
+    {
+        imageInfos.push_back(info);
+
+        VkWriteDescriptorSet write = {};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descSet;
+        write.dstBinding = binding;
+        write.dstArrayElement = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = type;
+        write.pImageInfo = &imageInfos.back();
+        writes.push_back(write);
+    };
 
     // binding 0: the whole global texture array points at the white texture
     // for now (real textures come with the texture-manager port).
@@ -330,14 +508,7 @@ void FramebuffersQ2::UpdateDescriptors()
         storage.imageView = images[i].storageView;
         storage.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-        VkWriteDescriptorSet writeStorage = {};
-        writeStorage.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writeStorage.dstSet = descSet;
-        writeStorage.dstBinding = BINDING_OFFSET_IMAGES + i;
-        writeStorage.descriptorCount = 1;
-        writeStorage.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writeStorage.pImageInfo = &storage;
-        writes.push_back(writeStorage);
+        AddWrite(BINDING_OFFSET_IMAGES + i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, storage);
 
         VkDescriptorImageInfo sampled = {};
         sampled.sampler = sampler;
@@ -347,14 +518,7 @@ void FramebuffersQ2::UpdateDescriptors()
         // so the sampled descriptors must declare GENERAL as well.
         sampled.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-        VkWriteDescriptorSet writeSampled = {};
-        writeSampled.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writeSampled.dstSet = descSet;
-        writeSampled.dstBinding = BINDING_OFFSET_TEXTURES + i;
-        writeSampled.descriptorCount = 1;
-        writeSampled.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writeSampled.pImageInfo = &sampled;
-        writes.push_back(writeSampled);
+        AddWrite(BINDING_OFFSET_TEXTURES + i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sampled);
     }
 
     // blue noise array
@@ -364,17 +528,70 @@ void FramebuffersQ2::UpdateDescriptors()
         blueNoise.imageView = blueNoiseImageView;
         blueNoise.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        VkWriteDescriptorSet write = {};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = descSet;
-        write.dstBinding = BINDING_OFFSET_BLUE_NOISE;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo = &blueNoise;
-        writes.push_back(write);
+        AddWrite(BINDING_OFFSET_BLUE_NOISE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, blueNoise);
     }
 
-    vkUpdateDescriptorSets(device, writes.size(), writes.data(), 0, nullptr);
+    // Sky / terrain bindings (138..148), used by the path tracer shaders.
+    // Point them at 1x1 placeholders for now; real sky, envmap and terrain
+    // data comes with later port stages.
+    {
+        VkDescriptorImageInfo cube = {};
+        cube.sampler = sampler;
+        cube.imageView = placeholderCubeView;
+        cube.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        const uint32_t cubeBindings[] =
+        {
+            BINDING_OFFSET_ENVMAP,
+            BINDING_OFFSET_PHYSICAL_SKY,
+            BINDING_OFFSET_TERRAIN_ALBEDO,
+            BINDING_OFFSET_TERRAIN_NORMALS,
+            BINDING_OFFSET_TERRAIN_DEPTH,
+        };
+        for (uint32_t binding : cubeBindings)
+        {
+            AddWrite(binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, cube);
+        }
+
+        VkDescriptorImageInfo volume = {};
+        volume.sampler = sampler;
+        volume.imageView = placeholder3DView;
+        volume.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        const uint32_t volumeBindings[] =
+        {
+            BINDING_OFFSET_SKY_SCATTERING,
+            BINDING_OFFSET_SKY_CLOUDS,
+        };
+        for (uint32_t binding : volumeBindings)
+        {
+            AddWrite(binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, volume);
+        }
+
+        VkDescriptorImageInfo flat = {};
+        flat.sampler = sampler;
+        flat.imageView = whiteImageView;
+        flat.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        const uint32_t flatBindings[] =
+        {
+            BINDING_OFFSET_SKY_TRANSMITTANCE,
+            BINDING_OFFSET_SKY_IRRADIANCE,
+            BINDING_OFFSET_TERRAIN_SHADOWMAP,
+        };
+        for (uint32_t binding : flatBindings)
+        {
+            AddWrite(binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, flat);
+        }
+
+        VkDescriptorImageInfo storage = {};
+        storage.imageView = placeholderStorageView;
+        storage.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+        AddWrite(BINDING_OFFSET_PHYSICAL_SKY_IMG, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, storage);
+    }
+
+    vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 void FramebuffersQ2::SetBlueNoiseImageView(VkImageView view)

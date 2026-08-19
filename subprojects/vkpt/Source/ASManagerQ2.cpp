@@ -407,6 +407,11 @@ void ASManagerQ2::CreateDescSet()
     }
 }
 
+bool ASManagerQ2::HasTLAS() const
+{
+    return submitted && tlasGeometry.GetAS() != VK_NULL_HANDLE;
+}
+
 VkDescriptorSet ASManagerQ2::GetDescSet() const
 {
     return descSet;
