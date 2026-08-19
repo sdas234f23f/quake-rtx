@@ -926,6 +926,12 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
     imageComposition->Finalize(
         cmd, frameIndex, uniform.get(), tonemapping.get(), volumetric.get() );
 
+    // Control point: bridge the legacy HDR image through the Q2RTX
+    // post-processing chain (bloom + tone mapping) and back into FINAL.
+    bridgeQ2->Run(cmd, frameIndex,
+                  renderResolution.Width(), renderResolution.Height(),
+                  static_cast<float>(currentFrameTime - previousFrameTime));
+
 
     bool enableBloom = drawInfo.pBloomParams == nullptr || (drawInfo.pBloomParams != nullptr && drawInfo.pBloomParams->bloomIntensity > 0.0f);
 
@@ -1137,8 +1143,9 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
         asvgfAtrousQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         asvgfTaaQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         skyBufferResolveQ2->Dispatch(cmd);
-        toneMappingQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height(),
-                                static_cast<float>(currentFrameTime - previousFrameTime));
+
+        // bloom + tone mapping run inside the BridgeQ2 control point, after
+        // the legacy image is copied into the Q2RTX image.
 
         Render(cmd, *drawInfo);
     }

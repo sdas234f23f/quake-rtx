@@ -216,6 +216,12 @@ Status legend:
   `SunColorBuffer` into float values (1x1 dispatch, set 0 + set 1).
   `VertexBufferQ2` gained a real `SunColorBuffer` bound both as storage
   (`SUN_COLOR_BUFFER_BINDING_IDX`) and UBO (`SUN_COLOR_UBO_BINDING_IDX`).
+- **Bridge control point (done)**: `BridgeQ2` copies the legacy renderer's
+  HDR result (`FB_IMAGE_INDEX_PRE_FINAL`) into the Q2RTX `IMG_TAA_OUTPUT`,
+  runs the swapped Q2RTX post-processing (bloom + tone mapping), and blits
+  the result back into the legacy `FB_IMAGE_INDEX_FINAL` so it is displayed.
+  This makes the Q2RTX post-processing visible as a reference point. Bloom
+  and tone mapping now run here (not in the pre-Render swap list).
 - Then swap shader files one by one; each swap is a testable step.
 
 ## License notes

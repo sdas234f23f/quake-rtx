@@ -160,12 +160,13 @@ void ToneMappingQ2::Dispatch(VkCommandBuffer cmd, uint32_t width, uint32_t heigh
     }
 
     // Transition TAA_OUTPUT to GENERAL (no-op once it is there).
+    // GENERAL->GENERAL (not UNDEFINED) so previously copied content is kept.
     std::array<VkImageMemoryBarrier, IMAGES_USED.size()> barriers = {};
     for (size_t i = 0; i < IMAGES_USED.size(); i++)
     {
         barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barriers[i].image = framebuffersQ2->GetImage(IMAGES_USED[i]);
-        barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
         barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
         barriers[i].srcAccessMask = 0;
         barriers[i].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;

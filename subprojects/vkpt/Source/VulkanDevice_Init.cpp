@@ -196,6 +196,13 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         uniformQ2,
         vertexBufferQ2);
 
+    bridgeQ2             = std::make_shared<BridgeQ2>(
+        device,
+        framebuffers,
+        framebuffersQ2,
+        bloomQ2,
+        toneMappingQ2);
+
     scene               = std::make_shared<Scene>(
         device,
         physDevice,

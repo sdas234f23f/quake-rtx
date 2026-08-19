@@ -50,6 +50,7 @@
 #include "ToneMappingQ2.h"
 #include "AsvgfTaaQ2.h"
 #include "SkyBufferResolveQ2.h"
+#include "BridgeQ2.h"
 #include "MemoryAllocator.h"
 #include "TextureManager.h"
 #include "BlueNoise.h"
@@ -193,6 +194,7 @@ private:
     std::shared_ptr<ToneMappingQ2>           toneMappingQ2;
     std::shared_ptr<AsvgfTaaQ2>              asvgfTaaQ2;
     std::shared_ptr<SkyBufferResolveQ2>      skyBufferResolveQ2;
+    std::shared_ptr<BridgeQ2>                bridgeQ2;
     std::shared_ptr<Scene>                  scene;
 
     std::shared_ptr<ShaderManager>          shaderManager;
