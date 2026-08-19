@@ -14,6 +14,7 @@
 #include "../q2rtx-shaders/vertex_buffer.h"
 
 #include <cstring>
+#include <vector>
 
 using namespace vkpt;
 
@@ -279,7 +280,10 @@ void ASManagerQ2::BuildTLAS(VkCommandBuffer cmd)
 
 void ASManagerQ2::FillInstanceBuffer()
 {
-    InstanceBuffer inst = {};
+    // InstanceBuffer is ~1.7 MB (8192 model instances x 192 B), so it must
+    // live on the heap, not the stack.
+    std::vector<uint8_t> instanceData(sizeof(InstanceBuffer), 0);
+    InstanceBuffer &inst = *reinterpret_cast<InstanceBuffer *>(instanceData.data());
 
     // One model instance for the world: identity transform (positions are
     // already world-space), primitive buffer = VERTEX_BUFFER_WORLD.
@@ -319,7 +323,7 @@ void ASManagerQ2::FillInstanceBuffer()
     inst.tlas_instance_prim_offsets[1] = 0;
     inst.tlas_instance_model_indices[1] = -1;
 
-    uniformQ2->SetInstanceBuffer(&inst, sizeof(inst));
+    uniformQ2->SetInstanceBuffer(instanceData.data(), instanceData.size());
 }
 
 void ASManagerQ2::CreateDescSet()
