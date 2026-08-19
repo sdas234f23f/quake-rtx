@@ -183,6 +183,13 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         framebuffersQ2,
         vertexBufferQ2);
 
+    asvgfTaaQ2           = std::make_shared<AsvgfTaaQ2>(
+        device,
+        shaderManager,
+        uniformQ2,
+        framebuffersQ2,
+        vertexBufferQ2);
+
     scene               = std::make_shared<Scene>(
         device,
         physDevice,

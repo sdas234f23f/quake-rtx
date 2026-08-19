@@ -35,6 +35,12 @@ VertexBufferQ2::VertexBufferQ2(VkDevice _device, std::shared_ptr<MemoryAllocator
                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                            "Q2RTX tone mapping buffer");
 
+    readbackBuffer.Init(_allocator, sizeof(ReadbackBuffer),
+                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                        "Q2RTX readback buffer");
+
     CreateDescriptors();
 }
 
@@ -43,6 +49,7 @@ VertexBufferQ2::~VertexBufferQ2()
     vkDestroyDescriptorPool(device, descPool, nullptr);
     vkDestroyDescriptorSetLayout(device, descSetLayout, nullptr);
 
+    readbackBuffer.Destroy();
     toneMappingBuffer.Destroy();
     nullBuffer.Destroy();
 }
@@ -218,8 +225,17 @@ void VertexBufferQ2::CreateDescriptors()
     write.dstBinding = IQM_MATRIX_BUFFER_BINDING_IDX;
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
+    // READBACK_BUFFER points at the real buffer.
+    VkDescriptorBufferInfo readbackInfo = {};
+    readbackInfo.buffer = readbackBuffer.GetBuffer();
+    readbackInfo.offset = 0;
+    readbackInfo.range = sizeof(ReadbackBuffer);
+
     write.dstBinding = READBACK_BUFFER_BINDING_IDX;
+    write.pBufferInfo = &readbackInfo;
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+
+    write.pBufferInfo = &nullInfo;
 
     // TONE_MAPPING_BUFFER points at the real buffer.
     VkDescriptorBufferInfo toneMappingInfo = {};

@@ -206,6 +206,11 @@ Status legend:
   specialization) via `ToneMappingQ2`. First pass using all three Q2RTX
   descriptor sets; `VertexBufferQ2` gained a real `ToneMappingBuffer`
   (histogram accumulator + tone curve) for `TONE_MAPPING_BUFFER_BINDING_IDX`.
+- **ASVGF TAA upscale (done)**: `asvgf_taau.comp` via `AsvgfTaaQ2` -
+  temporal anti-aliasing + upscale (flat color/motion + previous TAA frame
+  into `IMG_TAA_OUTPUT`). Uses all three Q2RTX sets; `VertexBufferQ2` gained
+  a real `ReadbackBuffer` for `READBACK_BUFFER_BINDING_IDX` (written by the
+  shader).
 - Then swap shader files one by one; each swap is a testable step.
 
 ## License notes

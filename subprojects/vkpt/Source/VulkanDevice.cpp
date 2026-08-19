@@ -1135,6 +1135,7 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
         asvgfGradientImgQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         asvgfLfQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         asvgfAtrousQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
+        asvgfTaaQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         toneMappingQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height(),
                                 static_cast<float>(currentFrameTime - previousFrameTime));
 

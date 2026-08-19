@@ -48,6 +48,7 @@
 #include "AsvgfLfQ2.h"
 #include "AsvgfAtrousQ2.h"
 #include "ToneMappingQ2.h"
+#include "AsvgfTaaQ2.h"
 #include "MemoryAllocator.h"
 #include "TextureManager.h"
 #include "BlueNoise.h"
@@ -189,6 +190,7 @@ private:
     std::shared_ptr<AsvgfLfQ2>               asvgfLfQ2;
     std::shared_ptr<AsvgfAtrousQ2>           asvgfAtrousQ2;
     std::shared_ptr<ToneMappingQ2>           toneMappingQ2;
+    std::shared_ptr<AsvgfTaaQ2>              asvgfTaaQ2;
     std::shared_ptr<Scene>                  scene;
 
     std::shared_ptr<ShaderManager>          shaderManager;

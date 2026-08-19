@@ -43,6 +43,10 @@ private:
     // tone curve), written by the tone mapping shaders.
     Buffer toneMappingBuffer;
 
+    // Real backing for the readback buffer (a few pixels read back to the
+    // CPU every frame), written by asvgf_taau.comp.
+    Buffer readbackBuffer;
+
     VkDescriptorPool      descPool;
     VkDescriptorSetLayout descSetLayout;
     VkDescriptorSet       descSet;
