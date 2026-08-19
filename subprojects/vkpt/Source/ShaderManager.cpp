@@ -107,6 +107,9 @@ static ShaderModuleDefinition G_SHADERS[] =
     {"Q2AsvgfGradientImg",          "q2rtx/asvgf_gradient_img.comp.spv"    },
     {"Q2AsvgfLf",                   "q2rtx/asvgf_lf.comp.spv"             },
     {"Q2AsvgfAtrous",               "q2rtx/asvgf_atrous.comp.spv"         },
+    {"Q2ToneMappingHistogram",      "q2rtx/tone_mapping_histogram.comp.spv"},
+    {"Q2ToneMappingCurve",          "q2rtx/tone_mapping_curve.comp.spv"    },
+    {"Q2ToneMappingApply",          "q2rtx/tone_mapping_apply.comp.spv"    },
 };
 
 

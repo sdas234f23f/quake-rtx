@@ -201,6 +201,11 @@ Status legend:
   spatial wavelet iterations, each a pipeline specialized on
   `spec_iteration` 0..3 (with `spec_enable_lf = 1`); the last iteration
   also composites into `IMG_ASVGF_COLOR`.
+- **Tone mapping (done)**: `tone_mapping_histogram.comp` +
+  `tone_mapping_curve.comp` + `tone_mapping_apply.comp` (SDR
+  specialization) via `ToneMappingQ2`. First pass using all three Q2RTX
+  descriptor sets; `VertexBufferQ2` gained a real `ToneMappingBuffer`
+  (histogram accumulator + tone curve) for `TONE_MAPPING_BUFFER_BINDING_IDX`.
 - Then swap shader files one by one; each swap is a testable step.
 
 ## License notes

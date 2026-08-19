@@ -62,6 +62,7 @@ set(vkpt_SOURCES
     Source/AsvgfGradientImgQ2.cpp
     Source/AsvgfLfQ2.cpp
     Source/AsvgfAtrousQ2.cpp
+    Source/ToneMappingQ2.cpp
     Source/BlueNoise.cpp
     Source/ImageComposition.cpp
     Source/Tonemapping.cpp

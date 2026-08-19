@@ -27,6 +27,14 @@ VertexBufferQ2::VertexBufferQ2(VkDevice _device, std::shared_ptr<MemoryAllocator
     nullBuffer.Init(_allocator, 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, "Q2RTX null buffer");
 
+    // Real tone mapping buffer: the histogram / curve / apply shaders read
+    // and write it (Q2RTX creates the same buffer in vertex_buffer.c).
+    toneMappingBuffer.Init(_allocator, sizeof(ToneMappingBuffer),
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                               VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                           "Q2RTX tone mapping buffer");
+
     CreateDescriptors();
 }
 
@@ -35,6 +43,7 @@ VertexBufferQ2::~VertexBufferQ2()
     vkDestroyDescriptorPool(device, descPool, nullptr);
     vkDestroyDescriptorSetLayout(device, descSetLayout, nullptr);
 
+    toneMappingBuffer.Destroy();
     nullBuffer.Destroy();
 }
 
@@ -212,9 +221,17 @@ void VertexBufferQ2::CreateDescriptors()
     write.dstBinding = READBACK_BUFFER_BINDING_IDX;
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
+    // TONE_MAPPING_BUFFER points at the real buffer.
+    VkDescriptorBufferInfo toneMappingInfo = {};
+    toneMappingInfo.buffer = toneMappingBuffer.GetBuffer();
+    toneMappingInfo.offset = 0;
+    toneMappingInfo.range = sizeof(ToneMappingBuffer);
+
     write.dstBinding = TONE_MAPPING_BUFFER_BINDING_IDX;
+    write.pBufferInfo = &toneMappingInfo;
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
+    write.pBufferInfo = &nullInfo;
     write.dstBinding = SUN_COLOR_BUFFER_BINDING_IDX;
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 

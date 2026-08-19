@@ -39,6 +39,10 @@ private:
     // uploaded (same trick as Q2RTX null_buffer).
     Buffer nullBuffer;
 
+    // Real backing for the tone mapping buffer (histogram accumulator +
+    // tone curve), written by the tone mapping shaders.
+    Buffer toneMappingBuffer;
+
     VkDescriptorPool      descPool;
     VkDescriptorSetLayout descSetLayout;
     VkDescriptorSet       descSet;

@@ -176,6 +176,13 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         uniformQ2,
         framebuffersQ2);
 
+    toneMappingQ2        = std::make_shared<ToneMappingQ2>(
+        device,
+        shaderManager,
+        uniformQ2,
+        framebuffersQ2,
+        vertexBufferQ2);
+
     scene               = std::make_shared<Scene>(
         device,
         physDevice,
