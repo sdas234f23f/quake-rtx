@@ -47,6 +47,10 @@ private:
     // CPU every frame), written by asvgf_taau.comp.
     Buffer readbackBuffer;
 
+    // Real backing for the sun/sky color buffer, written by
+    // sky_buffer_resolve.comp and bound as both storage and UBO.
+    Buffer sunColorBuffer;
+
     VkDescriptorPool      descPool;
     VkDescriptorSetLayout descSetLayout;
     VkDescriptorSet       descSet;

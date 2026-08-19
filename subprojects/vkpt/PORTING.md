@@ -211,6 +211,11 @@ Status legend:
   into `IMG_TAA_OUTPUT`). Uses all three Q2RTX sets; `VertexBufferQ2` gained
   a real `ReadbackBuffer` for `READBACK_BUFFER_BINDING_IDX` (written by the
   shader).
+- **Sky buffer resolve (done)**: `sky_buffer_resolve.comp` via
+  `SkyBufferResolveQ2` - converts the fixed-point sun/sky accumulation in
+  `SunColorBuffer` into float values (1x1 dispatch, set 0 + set 1).
+  `VertexBufferQ2` gained a real `SunColorBuffer` bound both as storage
+  (`SUN_COLOR_BUFFER_BINDING_IDX`) and UBO (`SUN_COLOR_UBO_BINDING_IDX`).
 - Then swap shader files one by one; each swap is a testable step.
 
 ## License notes

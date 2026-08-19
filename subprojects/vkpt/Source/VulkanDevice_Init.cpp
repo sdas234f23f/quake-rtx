@@ -190,6 +190,12 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         framebuffersQ2,
         vertexBufferQ2);
 
+    skyBufferResolveQ2   = std::make_shared<SkyBufferResolveQ2>(
+        device,
+        shaderManager,
+        uniformQ2,
+        vertexBufferQ2);
+
     scene               = std::make_shared<Scene>(
         device,
         physDevice,

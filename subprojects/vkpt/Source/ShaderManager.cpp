@@ -111,6 +111,7 @@ static ShaderModuleDefinition G_SHADERS[] =
     {"Q2ToneMappingCurve",          "q2rtx/tone_mapping_curve.comp.spv"    },
     {"Q2ToneMappingApply",          "q2rtx/tone_mapping_apply.comp.spv"    },
     {"Q2AsvgfTaa",                  "q2rtx/asvgf_taau.comp.spv"           },
+    {"Q2SkyBufferResolve",          "q2rtx/sky_buffer_resolve.comp.spv"    },
 };
 
 

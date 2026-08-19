@@ -41,6 +41,15 @@ VertexBufferQ2::VertexBufferQ2(VkDevice _device, std::shared_ptr<MemoryAllocator
                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                         "Q2RTX readback buffer");
 
+    // Q2RTX binds the same sun-color buffer as storage AND as a UBO
+    // (sky_buffer_resolve.comp fills it, shaders read it as sun_color_ubo).
+    sunColorBuffer.Init(_allocator, sizeof(SunColorBuffer),
+                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                        "Q2RTX sun color buffer");
+
     CreateDescriptors();
 }
 
@@ -49,6 +58,7 @@ VertexBufferQ2::~VertexBufferQ2()
     vkDestroyDescriptorPool(device, descPool, nullptr);
     vkDestroyDescriptorSetLayout(device, descSetLayout, nullptr);
 
+    sunColorBuffer.Destroy();
     readbackBuffer.Destroy();
     toneMappingBuffer.Destroy();
     nullBuffer.Destroy();
@@ -247,13 +257,22 @@ void VertexBufferQ2::CreateDescriptors()
     write.pBufferInfo = &toneMappingInfo;
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
-    write.pBufferInfo = &nullInfo;
-    write.dstBinding = SUN_COLOR_BUFFER_BINDING_IDX;
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    // SUN_COLOR_UBO is a uniform buffer binding; Q2RTX points both at the
+    // same sun-color buffer.
+    VkDescriptorBufferInfo sunColorInfo = {};
+    sunColorInfo.buffer = sunColorBuffer.GetBuffer();
+    sunColorInfo.offset = 0;
+    sunColorInfo.range = sizeof(SunColorBuffer);
 
-    // SUN_COLOR_UBO is a uniform buffer binding.
     write.dstBinding = SUN_COLOR_UBO_BINDING_IDX;
     write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write.pBufferInfo = &sunColorInfo;
+    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+
+    // SUN_COLOR_BUFFER (storage) also points at the real buffer.
+    write.dstBinding = SUN_COLOR_BUFFER_BINDING_IDX;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    write.pBufferInfo = &sunColorInfo;
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
     write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;

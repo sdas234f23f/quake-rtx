@@ -64,6 +64,7 @@ set(vkpt_SOURCES
     Source/AsvgfAtrousQ2.cpp
     Source/ToneMappingQ2.cpp
     Source/AsvgfTaaQ2.cpp
+    Source/SkyBufferResolveQ2.cpp
     Source/BlueNoise.cpp
     Source/ImageComposition.cpp
     Source/Tonemapping.cpp
