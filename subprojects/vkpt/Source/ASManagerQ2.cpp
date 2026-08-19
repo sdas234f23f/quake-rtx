@@ -57,7 +57,9 @@ ASManagerQ2::ASManagerQ2(VkDevice _device,
   cmdManager(std::move(_cmdManager)),
   geometryQ2(std::move(_geometryQ2)),
   uniformQ2(std::move(_uniformQ2)),
-  blas(_device, static_cast<VertexCollectorFilterTypeFlags>(VertexCollectorFilterTypeFlagBits::CF_STATIC_NON_MOVABLE)),
+  blas(_device, static_cast<VertexCollectorFilterTypeFlags>(
+                    VertexCollectorFilterTypeFlagBits::CF_STATIC_NON_MOVABLE |
+                    VertexCollectorFilterTypeFlagBits::PT_OPAQUE)),
   tlasGeometry(_device, "Q2RTX geometry TLAS"),
   tlasEffects(_device, "Q2RTX effects TLAS"),
   descPool(VK_NULL_HANDLE),
