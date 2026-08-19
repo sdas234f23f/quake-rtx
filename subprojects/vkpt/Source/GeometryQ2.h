@@ -50,6 +50,10 @@ public:
     void SubmitStatic();
 
     uint32_t GetWorldPrimitiveCount() const;
+    VkBuffer GetWorldBuffer() const;
+    VkDeviceAddress GetWorldBufferAddress() const;
+    // Offset of the BLAS source positions inside the world buffer.
+    VkDeviceSize GetWorldPositionOffset() const;
 
 private:
     struct WorldData
@@ -58,10 +62,8 @@ private:
         std::vector<uint8_t> positions;
     };
 
-private:
     void UploadToDevice(WorldData &&data);
 
-private:
     VkDevice device;
     std::shared_ptr<MemoryAllocator> allocator;
     std::shared_ptr<CommandBufferManager> cmdManager;
@@ -70,6 +72,7 @@ private:
     WorldData world;
     Buffer worldBuffer;
     VkFence uploadFence;
+    uint32_t worldPrimCount;
     bool hasWorldData;
 };
 

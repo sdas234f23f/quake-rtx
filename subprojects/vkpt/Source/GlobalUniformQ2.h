@@ -13,6 +13,8 @@
 
 #include "AutoBuffer.h"
 
+#include <vector>
+
 namespace vkpt
 {
 
@@ -32,6 +34,11 @@ public:
     // Rebuilds the Q2RTX UBO from the legacy uniform data and uploads it.
     void Upload(VkCommandBuffer cmd, uint32_t frameIndex, const ShGlobalUniform *src);
 
+    // Sets the CPU-side copy of the InstanceBuffer SSBO that Upload() writes
+    // into the buffer each frame. Called by ASManagerQ2 after the geometry /
+    // acceleration structures are built.
+    void SetInstanceBuffer(const void *pData, size_t size);
+
     VkDescriptorSet GetDescSet() const;
     VkDescriptorSetLayout GetDescSetLayout() const;
 
@@ -42,6 +49,7 @@ private:
     VkDevice device;
 
     std::shared_ptr<AutoBuffer> buffer;
+    std::vector<uint8_t> instanceBufferCpu;
 
     VkDescriptorPool      descPool;
     VkDescriptorSetLayout descSetLayout;

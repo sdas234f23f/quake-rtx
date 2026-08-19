@@ -9,6 +9,7 @@
 #include "Generated/ShaderCommonC.h"
 #include "CmdLabel.h"
 
+#include <algorithm>
 #include <cstring>
 
 using namespace vkpt;
@@ -198,11 +199,25 @@ void GlobalUniformQ2::Upload(VkCommandBuffer cmd, uint32_t frameIndex, const ShG
     void *dst = buffer->GetMapped(frameIndex);
     memcpy(dst, &ubo, sizeof(ubo));
 
-    // Instance data is not fed by the game yet (it comes with the geometry
-    // port); upload a zeroed buffer so the SSBO binding is valid.
-    memset(static_cast<uint8_t *>(dst) + instanceOffset, 0, sizeof(InstanceBuffer));
+    // Upload the CPU-side InstanceBuffer if the geometry port has set one,
+    // otherwise keep the SSBO zeroed so the binding stays valid.
+    uint8_t *instanceDst = static_cast<uint8_t *>(dst) + instanceOffset;
+    if (!instanceBufferCpu.empty())
+    {
+        memcpy(instanceDst, instanceBufferCpu.data(), std::min(instanceBufferCpu.size(), sizeof(InstanceBuffer)));
+    }
+    else
+    {
+        memset(instanceDst, 0, sizeof(InstanceBuffer));
+    }
 
     buffer->CopyFromStaging(cmd, frameIndex, instanceOffset + sizeof(InstanceBuffer));
+}
+
+void GlobalUniformQ2::SetInstanceBuffer(const void *pData, size_t size)
+{
+    instanceBufferCpu.assign(static_cast<const uint8_t *>(pData),
+                             static_cast<const uint8_t *>(pData) + size);
 }
 
 VkDescriptorSet GlobalUniformQ2::GetDescSet() const

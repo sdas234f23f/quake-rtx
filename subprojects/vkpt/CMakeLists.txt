@@ -56,6 +56,7 @@ set(vkpt_SOURCES
     Source/FramebuffersQ2.cpp
     Source/VertexBufferQ2.cpp
     Source/GeometryQ2.cpp
+    Source/ASManagerQ2.cpp
     Source/ShaderSwapQ2.cpp
     Source/BloomQ2.cpp
     Source/CompositingQ2.cpp

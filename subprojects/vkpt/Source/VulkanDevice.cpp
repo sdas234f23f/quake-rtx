@@ -1372,8 +1372,10 @@ void VulkanDevice::SubmitStaticGeometries()
     scene->SubmitStatic();
 
     // Upload the gathered Q2RTX world geometry after the legacy scene has
-    // finished its (synchronized) static submission.
+    // finished its (synchronized) static submission, then build the Q2RTX
+    // acceleration structures over it.
     geometryQ2->SubmitStatic();
+    asManagerQ2->SubmitStatic();
 }
 
 void VulkanDevice::StartNewStaticScene()

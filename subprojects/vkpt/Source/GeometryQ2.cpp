@@ -110,6 +110,7 @@ GeometryQ2::GeometryQ2(VkDevice _device,
   cmdManager(std::move(_cmdManager)),
   vertexBufferQ2(std::move(_vertexBufferQ2)),
   uploadFence(VK_NULL_HANDLE),
+  worldPrimCount(0),
   hasWorldData(false)
 {
     VkFenceCreateInfo fenceInfo = {};
@@ -132,6 +133,7 @@ void GeometryQ2::BeginStaticUpload()
 {
     world.primitives.clear();
     world.positions.clear();
+    worldPrimCount = 0;
     hasWorldData = false;
 }
 
@@ -147,6 +149,7 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
     const uint32_t triCount = uploadInfo.indexCount ? uploadInfo.indexCount / 3
                                                     : uploadInfo.vertexCount / 3;
 
+    worldPrimCount += triCount;
     world.primitives.reserve(world.primitives.size() + triCount * sizeof(VboPrimitive));
     world.positions.reserve(world.positions.size() + triCount * 9 * sizeof(float));
 
@@ -254,7 +257,22 @@ void GeometryQ2::SubmitStatic()
 
 uint32_t GeometryQ2::GetWorldPrimitiveCount() const
 {
-    return static_cast<uint32_t>(worldBuffer.IsInitted() ? worldBuffer.GetSize() / sizeof(VboPrimitive) : 0);
+    return worldPrimCount;
+}
+
+VkBuffer GeometryQ2::GetWorldBuffer() const
+{
+    return worldBuffer.IsInitted() ? worldBuffer.GetBuffer() : VK_NULL_HANDLE;
+}
+
+VkDeviceAddress GeometryQ2::GetWorldBufferAddress() const
+{
+    return worldBuffer.IsInitted() ? worldBuffer.GetAddress() : 0;
+}
+
+VkDeviceSize GeometryQ2::GetWorldPositionOffset() const
+{
+    return worldPrimCount * sizeof(VboPrimitive);
 }
 
 void GeometryQ2::UploadToDevice(WorldData &&data)
