@@ -1272,6 +1272,10 @@ void VulkanDevice::UploadGeometry(const RgGeometryUploadInfo *uploadInfo)
     }
 
     scene->Upload(currentFrameState.GetFrameIndex(), *uploadInfo);
+
+    // Parallel Q2RTX world geometry (stage G1): convert the same CPU data
+    // into the Q2RTX VboPrimitive format. No effect on rendering yet.
+    geometryQ2->AddStaticGeometry(*uploadInfo);
 }
 
 void VulkanDevice::UpdateGeometryTransform(const RgUpdateTransformInfo *updateInfo)
@@ -1366,11 +1370,16 @@ void vkpt::VulkanDevice::UploadPortal(const RgPortalUploadInfo *pUploadInfo)
 void VulkanDevice::SubmitStaticGeometries()
 {
     scene->SubmitStatic();
+
+    // Upload the gathered Q2RTX world geometry after the legacy scene has
+    // finished its (synchronized) static submission.
+    geometryQ2->SubmitStatic();
 }
 
 void VulkanDevice::StartNewStaticScene()
 {
     scene->StartNewStatic();
+    geometryQ2->BeginStaticUpload();
 }
 
 void VulkanDevice::UploadDirectionalLight(const RgDirectionalLightUploadInfo *pLightInfo)

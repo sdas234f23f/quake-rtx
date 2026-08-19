@@ -29,6 +29,13 @@ public:
     VkDescriptorSet GetDescSet() const;
     VkDescriptorSetLayout GetDescSetLayout() const;
 
+    // Point the world bindings at real geometry: binding 0 element
+    // VERTEX_BUFFER_WORLD gets the primitive array, binding 1
+    // (POSITION_BUFFER_BINDING_IDX) gets the BLAS source positions.
+    // Called by GeometryQ2 after the static level geometry is uploaded.
+    void SetWorldBufferInfo(const VkDescriptorBufferInfo &primInfo,
+                            const VkDescriptorBufferInfo &posInfo);
+
 private:
     void CreateDescriptors();
 

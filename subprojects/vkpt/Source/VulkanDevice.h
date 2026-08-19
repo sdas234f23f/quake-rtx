@@ -36,6 +36,7 @@
 #include "GlobalUniform.h"
 #include "GlobalUniformQ2.h"
 #include "VertexBufferQ2.h"
+#include "GeometryQ2.h"
 #include "PathTracer.h"
 #include "Rasterizer.h"
 #include "Framebuffers.h"
@@ -184,6 +185,7 @@ private:
     std::shared_ptr<GlobalUniform>          uniform;
     std::shared_ptr<GlobalUniformQ2>        uniformQ2;
     std::shared_ptr<VertexBufferQ2>         vertexBufferQ2;
+    std::shared_ptr<GeometryQ2>             geometryQ2;
     std::shared_ptr<ShaderSwapQ2>           shaderSwapQ2;
     std::shared_ptr<BloomQ2>                bloomQ2;
     std::shared_ptr<CompositingQ2>          compositingQ2;

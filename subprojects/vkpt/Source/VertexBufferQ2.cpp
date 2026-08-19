@@ -291,3 +291,25 @@ VkDescriptorSetLayout VertexBufferQ2::GetDescSetLayout() const
 {
     return descSetLayout;
 }
+
+void VertexBufferQ2::SetWorldBufferInfo(const VkDescriptorBufferInfo &primInfo,
+                                        const VkDescriptorBufferInfo &posInfo)
+{
+    VkWriteDescriptorSet write = {};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = descSet;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    write.descriptorCount = 1;
+
+    // binding 0 element VERTEX_BUFFER_WORLD (0) -> primitive array.
+    write.dstBinding = PRIMITIVE_BUFFER_BINDING_IDX;
+    write.dstArrayElement = VERTEX_BUFFER_WORLD;
+    write.pBufferInfo = &primInfo;
+    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+
+    // binding 1 -> BLAS source positions.
+    write.dstBinding = POSITION_BUFFER_BINDING_IDX;
+    write.dstArrayElement = 0;
+    write.pBufferInfo = &posInfo;
+    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+}
