@@ -877,6 +877,11 @@ get_sunlight(
  
 	float vis = trace_shadow_ray(shadow_ray, shadow_cull_mask);
 
+	// TEMP G5: force the shadow ray to be visible. The fake sun is in an
+	// indoor map where every ray hits a ceiling, which hides the lighting
+	// result. Remove once the real sky/sun port (G6) provides open sky.
+	vis = 1.0;
+
 	if(vis == 0)
 		return;
 

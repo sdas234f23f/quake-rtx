@@ -43,12 +43,25 @@ VertexBufferQ2::VertexBufferQ2(VkDevice _device, std::shared_ptr<MemoryAllocator
 
     // Q2RTX binds the same sun-color buffer as storage AND as a UBO
     // (sky_buffer_resolve.comp fills it, shaders read it as sun_color_ubo).
+    // Host-visible so the accumulation can be seeded on the CPU (G5 fake
+    // sun until the sky port).
     sunColorBuffer.Init(_allocator, sizeof(SunColorBuffer),
                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                         "Q2RTX sun color buffer");
+
+    // Real LightBuffer (material table + light lists). Only the default
+    // material and the sky-visibility mask are filled for now; the light
+    // lists come with the light port.
+    lightBuffer.Init(_allocator, sizeof(LightBuffer),
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     "Q2RTX light buffer");
+
+    FillLightBuffer();
+    FillSunColor();
 
     CreateDescriptors();
 }
@@ -59,9 +72,72 @@ VertexBufferQ2::~VertexBufferQ2()
     vkDestroyDescriptorSetLayout(device, descSetLayout, nullptr);
 
     sunColorBuffer.Destroy();
+    lightBuffer.Destroy();
     readbackBuffer.Destroy();
     toneMappingBuffer.Destroy();
     nullBuffer.Destroy();
+}
+
+// IEEE-754 half packing, GLSL unpackHalf2x16 layout: x = low 16 bits,
+// y = high 16 bits. Only used with the fixed default-material constants.
+static uint32_t PackHalf2x16(uint16_t x, uint16_t y)
+{
+    return (static_cast<uint32_t>(y) << 16) | x;
+}
+
+void VertexBufferQ2::FillLightBuffer()
+{
+    void *mapped = lightBuffer.Map();
+    if (!mapped)
+    {
+        return;
+    }
+    memset(mapped, 0, sizeof(LightBuffer));
+
+    LightBuffer *lb = static_cast<LightBuffer *>(mapped);
+
+    // Default PBR material at index 1 (geometry uses material_id = 1 until
+    // the real material table port): white, dielectric, rough.
+    // half: 0.0 = 0x0000, 0.5 = 0x3800, 1.0 = 0x3C00.
+    uint32_t *mat = &lb->material_table[1 * MATERIAL_UINTS];
+    mat[0] = 0;                                   // base_texture 0 (white placeholder), no normals
+    mat[1] = 0;                                   // no emissive / mask texture
+    mat[2] = PackHalf2x16(0x0000, 0x3C00);        // bump_scale 0, roughness_override 1
+    mat[3] = PackHalf2x16(0x0000, 0x0000);        // metalness 0, emissive_factor 0
+    mat[4] = 1;                                   // num_frames 1
+    mat[5] = PackHalf2x16(0x3800, 0x3C00);        // specular_factor 0.5, base_factor 1
+
+    // Sky visibility: mark every BSP cluster as seeing the sky (G5
+    // placeholder so the sun light passes the visibility test).
+    for (size_t i = 0; i < MAX_LIGHT_LISTS / 32; i++)
+    {
+        lb->sky_visibility[i] = ~0u;
+    }
+
+    lightBuffer.Unmap();
+}
+
+void VertexBufferQ2::FillSunColor()
+{
+    void *mapped = sunColorBuffer.Map();
+    if (!mapped)
+    {
+        return;
+    }
+    memset(mapped, 0, sizeof(SunColorBuffer));
+
+    SunColorBuffer *sun = static_cast<SunColorBuffer *>(mapped);
+
+    // G5 fake sun accumulation: sky_buffer_resolve.comp converts this to
+    // sun_color = accum / SUN_COLOR_ACCUMULATOR_FIXED_POINT_SCALE (then
+    // scales by pt_env_scale from the UBO). Warm white sun.
+    const int scale = SUN_COLOR_ACCUMULATOR_FIXED_POINT_SCALE;
+    const float sunColor[3] = { 1.0f, 0.95f, 0.85f };
+    sun->accum_sun_color[0] = static_cast<int>(sunColor[0] * scale);
+    sun->accum_sun_color[1] = static_cast<int>(sunColor[1] * scale);
+    sun->accum_sun_color[2] = static_cast<int>(sunColor[2] * scale);
+
+    sunColorBuffer.Unmap();
 }
 
 void VertexBufferQ2::CreateDescriptors()
@@ -223,7 +299,14 @@ void VertexBufferQ2::CreateDescriptors()
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
     write.dstBinding = LIGHT_BUFFER_BINDING_IDX;
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    {
+        VkDescriptorBufferInfo lightInfo = {};
+        lightInfo.buffer = lightBuffer.GetBuffer();
+        lightInfo.offset = 0;
+        lightInfo.range = sizeof(LightBuffer);
+        write.pBufferInfo = &lightInfo;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    }
 
     write.dstBinding = LIGHT_COUNTS_HISTORY_BUFFER_BINDING_IDX;
     write.descriptorCount = LIGHT_COUNT_HISTORY;

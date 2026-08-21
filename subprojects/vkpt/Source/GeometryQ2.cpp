@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 using namespace vkpt;
@@ -189,28 +190,68 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
         };
 
         VboPrimitive prim = {};
+
+        // World-space triangle positions.
+        float worldPos[3][3];
         for (int v = 0; v < 3; v++)
         {
             const RgVertex &vert = uploadInfo.pVertices[idx[v]];
+            TransformPoint(vert.position, worldPos[v]);
+        }
 
-            float worldPos[3];
-            TransformPoint(vert.position, worldPos);
-
+        // G5 fix: world geometry uploads with RG_GEOMETRY_UPLOAD_GENERATE_
+        // NORMALS_BIT leave RgVertex.normal zero (RTGL1 generates normals in
+        // a compute shader instead, which we do not run). Encoding a zero
+        // normal here would produce NaN/garbage, so derive the flat normal
+        // from the triangle winding instead — exactly like primary_rays.rgen
+        // computes flat_normal (cross(p1-p0, p2-p1)). This keeps the stored
+        // normal consistent with the backface-flip logic in primary_rays.
+        uint32_t normalEnc;
+        if (uploadInfo.flags & RG_GEOMETRY_UPLOAD_GENERATE_NORMALS_BIT)
+        {
+            const float e1[3] = {worldPos[1][0] - worldPos[0][0],
+                                 worldPos[1][1] - worldPos[0][1],
+                                 worldPos[1][2] - worldPos[0][2]};
+            const float e2[3] = {worldPos[2][0] - worldPos[1][0],
+                                 worldPos[2][1] - worldPos[1][1],
+                                 worldPos[2][2] - worldPos[1][2]};
+            float flat[3] = {e1[1] * e2[2] - e1[2] * e2[1],
+                             e1[2] * e2[0] - e1[0] * e2[2],
+                             e1[0] * e2[1] - e1[1] * e2[0]};
+            const float len = std::sqrt(flat[0] * flat[0] + flat[1] * flat[1] + flat[2] * flat[2]);
+            if (len > 1.0e-6f)
+            {
+                flat[0] /= len;
+                flat[1] /= len;
+                flat[2] /= len;
+            }
+            normalEnc = EncodeNormal(flat[0], flat[1], flat[2]);
+        }
+        else
+        {
+            // Explicitly supplied normals (e.g. alias models).
+            const RgVertex &v0 = uploadInfo.pVertices[idx[0]];
             float worldNormal[3];
-            TransformNormal(vert.normal, worldNormal);
+            TransformNormal(v0.normal, worldNormal);
+            normalEnc = EncodeNormal(worldNormal[0], worldNormal[1], worldNormal[2]);
+        }
 
+        for (int v = 0; v < 3; v++)
+        {
             float *posOut = (v == 0) ? prim.pos0 : (v == 1) ? prim.pos1 : prim.pos2;
-            posOut[0] = worldPos[0];
-            posOut[1] = worldPos[1];
-            posOut[2] = worldPos[2];
+            posOut[0] = worldPos[v][0];
+            posOut[1] = worldPos[v][1];
+            posOut[2] = worldPos[v][2];
 
             uint32_t *normalOut = (v == 0) ? &prim.normals[0]
                                            : (v == 1) ? &prim.normals[1] : &prim.normals[2];
-            *normalOut = EncodeNormal(worldNormal[0], worldNormal[1], worldNormal[2]);
+            *normalOut = normalEnc;
         }
 
-        // uv / material / cluster / shell. Material id is 0 for now (stage G6
-        // fills the real material table); alpha comes from the first layer.
+        // uv / material / cluster / shell. A default material (index 1, the
+        // white placeholder in material_table) until the real material table
+        // port; alpha comes from the first layer.
+        prim.material_id = 1;
         prim.uv0[0] = uploadInfo.pVertices[idx[0]].texCoord[0];
         prim.uv0[1] = uploadInfo.pVertices[idx[0]].texCoord[1];
         prim.uv1[0] = uploadInfo.pVertices[idx[0]].texCoordLayer1[0];

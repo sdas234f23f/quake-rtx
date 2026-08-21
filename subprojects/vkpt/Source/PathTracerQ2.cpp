@@ -28,6 +28,13 @@ struct PathTracerPushConstants
     int bounce;
 };
 
+// Q2RTX path_tracer.c pipeline_index_t order: PRIMARY_RAYS=0,
+// REFLECT_REFRACT_1=1, REFLECT_REFRACT_2=2, DIRECT_LIGHTING=3, ...
+constexpr uint32_t PIPELINE_DIRECT_LIGHTING = 3;
+// Q2RTX allocates the SBT for every pipeline; we only fill blocks 0 and 3
+// and leave the rest zeroed (never referenced).
+constexpr uint32_t SBT_PIPELINE_COUNT = 4;
+
 } // namespace
 
 PathTracerQ2::PathTracerQ2(VkDevice _device,
@@ -49,6 +56,7 @@ PathTracerQ2::PathTracerQ2(VkDevice _device,
   shaderManager(_shaderManager),
   pipelineLayout(VK_NULL_HANDLE),
   pipeline(VK_NULL_HANDLE),
+  pipelineDirect(VK_NULL_HANDLE),
   groupBaseAlignment(0),
   handleSize(0),
   alignedHandleSize(0),
@@ -60,7 +68,8 @@ PathTracerQ2::PathTracerQ2(VkDevice _device,
   shaderExplosion("Q2PathTracerExplosionRahit"),
   shaderSprite("Q2PathTracerSpriteRahit"),
   shaderBeamRahit("Q2PathTracerBeamRahit"),
-  shaderBeamRint("Q2PathTracerBeamRint")
+  shaderBeamRint("Q2PathTracerBeamRint"),
+  shaderDirect("Q2DirectLighting")
 {
     groupBaseAlignment = physDevice->GetRTPipelineProperties().shaderGroupBaseAlignment;
     handleSize = physDevice->GetRTPipelineProperties().shaderGroupHandleSize;
@@ -74,6 +83,7 @@ PathTracerQ2::~PathTracerQ2()
 {
     sbtBuffer.Destroy();
     vkDestroyPipeline(device, pipeline, nullptr);
+    vkDestroyPipeline(device, pipelineDirect, nullptr);
     vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 }
 
@@ -239,6 +249,27 @@ void PathTracerQ2::CreatePipeline()
         pipeline = VK_NULL_HANDLE;
         return;
     }
+
+    // G5: direct lighting pipeline - the same stages/groups, raygen swapped
+    // to direct_lighting.rgen. Skipped if the shader is missing.
+    VkShaderModule modDirect = shaderManager->GetShaderModule(shaderDirect);
+    if (modDirect != VK_NULL_HANDLE)
+    {
+        VkPipelineShaderStageCreateInfo directStages[std::size(stages)];
+        std::memcpy(directStages, stages, sizeof(stages));
+        directStages[0].module = modDirect;
+
+        VkRayTracingPipelineCreateInfoKHR directInfo = pipelineInfo;
+        directInfo.stageCount = static_cast<uint32_t>(std::size(directStages));
+        directInfo.pStages = directStages;
+
+        r = svkCreateRayTracingPipelinesKHR(device, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                            1, &directInfo, nullptr, &pipelineDirect);
+        if (r != VK_SUCCESS)
+        {
+            pipelineDirect = VK_NULL_HANDLE;
+        }
+    }
 }
 
 void PathTracerQ2::CreateShaderBindingTable()
@@ -248,10 +279,11 @@ void PathTracerQ2::CreateShaderBindingTable()
         return;
     }
 
-    // Q2RTX sizes the SBT per pipeline with SBT_ENTRIES_PER_PIPELINE entries
-    // (see dispatch_rays: the miss/hit region spans the whole pipeline block).
-    // PRIMARY_RAYS is the first pipeline, so its block starts at offset 0.
-    const uint32_t sbtSize = SBT_ENTRIES_PER_PIPELINE * alignedHandleSize;
+    // Q2RTX sizes the SBT for all pipelines (SBT_ENTRIES_PER_PIPELINE per
+    // pipeline); dispatch uses the pipeline index as the SBT block offset.
+    // Only the blocks we dispatch are filled (PRIMARY_RAYS = 0,
+    // DIRECT_LIGHTING = 3); the rest stays zeroed and is never referenced.
+    const uint32_t sbtSize = SBT_PIPELINE_COUNT * SBT_ENTRIES_PER_PIPELINE * alignedHandleSize;
 
     sbtBuffer.Init(allocator, sbtSize,
                    VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR |
@@ -259,27 +291,70 @@ void PathTracerQ2::CreateShaderBindingTable()
                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                    "Q2RTX path tracer SBT");
 
+    void *mapped = sbtBuffer.Map();
+    memset(mapped, 0, sbtSize);
+
+    WriteSbtBlock(static_cast<uint8_t *>(mapped), pipeline, 0);
+    WriteSbtBlock(static_cast<uint8_t *>(mapped), pipelineDirect, PIPELINE_DIRECT_LIGHTING);
+
+    sbtBuffer.Unmap();
+}
+
+void PathTracerQ2::WriteSbtBlock(uint8_t *dstBase, VkPipeline pipeline, uint32_t blockIndex)
+{
+    if (pipeline == VK_NULL_HANDLE)
+    {
+        return;
+    }
+
     std::vector<uint8_t> handles(handleSize * SBT_ENTRIES_PER_PIPELINE);
     VkResult r = svkGetRayTracingShaderGroupHandlesKHR(device, pipeline, 0, SBT_ENTRIES_PER_PIPELINE,
                                                        handles.size(), handles.data());
     VK_CHECKERROR(r);
 
-    void *mapped = sbtBuffer.Map();
-    memset(mapped, 0, sbtSize);
-
-    uint8_t *dst = static_cast<uint8_t *>(mapped);
+    uint8_t *dst = dstBase + (VkDeviceSize)blockIndex * SBT_ENTRIES_PER_PIPELINE * alignedHandleSize;
     for (uint32_t i = 0; i < SBT_ENTRIES_PER_PIPELINE; i++)
     {
         memcpy(dst + i * alignedHandleSize, handles.data() + i * handleSize, handleSize);
     }
-
-    sbtBuffer.Unmap();
 }
 
 void PathTracerQ2::DispatchPrimaryRays(VkCommandBuffer cmd, uint32_t width, uint32_t height)
 {
     // Nothing to trace until the level geometry produced a TLAS.
-    if (pipeline == VK_NULL_HANDLE || !asManagerQ2->HasTLAS())
+    if (!asManagerQ2->HasTLAS())
+    {
+        return;
+    }
+
+    DispatchRayTrace(cmd, pipeline, 0, width, height);
+}
+
+void PathTracerQ2::DispatchDirectLighting(VkCommandBuffer cmd, uint32_t width, uint32_t height)
+{
+    if (pipelineDirect == VK_NULL_HANDLE || !asManagerQ2->HasTLAS())
+    {
+        return;
+    }
+
+    // Make the primary-rays G-buffer writes visible to the direct lighting
+    // pass (same queue, but a memory dependency is required).
+    VkMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                         0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+    DispatchRayTrace(cmd, pipelineDirect, PIPELINE_DIRECT_LIGHTING, width, height);
+}
+
+void PathTracerQ2::DispatchRayTrace(VkCommandBuffer cmd, VkPipeline pipeline, uint32_t sbtBlock,
+                                    uint32_t width, uint32_t height)
+{
+    if (pipeline == VK_NULL_HANDLE || width == 0 || height == 0)
     {
         return;
     }
@@ -305,16 +380,17 @@ void PathTracerQ2::DispatchPrimaryRays(VkCommandBuffer cmd, uint32_t width, uint
                        0, sizeof(push), &push);
 
     VkDeviceAddress sbtAddress = sbtBuffer.GetAddress();
+    VkDeviceSize sbtOffset = (VkDeviceSize)SBT_ENTRIES_PER_PIPELINE * sbtBlock * alignedHandleSize;
 
-    // Q2RTX: PRIMARY_RAYS block starts at 0 (first pipeline); the raygen
-    // entry is the first group, miss and hit share the same block.
+    // Q2RTX: each pipeline's block starts at block * 9 * alignment; the
+    // raygen entry is the first group, miss and hit share the same block.
     VkStridedDeviceAddressRegionKHR raygen = {};
-    raygen.deviceAddress = sbtAddress;
+    raygen.deviceAddress = sbtAddress + sbtOffset;
     raygen.stride = alignedHandleSize;
     raygen.size = alignedHandleSize;
 
     VkStridedDeviceAddressRegionKHR missAndHit = {};
-    missAndHit.deviceAddress = sbtAddress;
+    missAndHit.deviceAddress = sbtAddress + sbtOffset;
     missAndHit.stride = alignedHandleSize;
     missAndHit.size = (VkDeviceSize)alignedHandleSize * SBT_ENTRIES_PER_PIPELINE;
 

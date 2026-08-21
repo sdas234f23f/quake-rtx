@@ -33,6 +33,16 @@ public:
     // (Re)creates the framebuffer images when the render size changes.
     void Create(uint32_t renderWidth, uint32_t renderHeight, uint32_t deviceCount);
 
+    // Transitions every framebuffer image to VK_IMAGE_LAYOUT_GENERAL once
+    // after (re)creation. Q2RTX keeps these images in GENERAL permanently;
+    // the storage writes (primary rays, direct lighting) require it and a
+    // later GENERAL->GENERAL barrier must not discard the contents.
+    void TransitionImagesToGeneral(VkCommandBuffer cmd);
+
+    // True for exactly one frame after the images were (re)created, so the
+    // caller can issue the one-time GENERAL transition.
+    bool TakeImageTransition();
+
     // Binds the Q2RTX blue noise texture into this set at
     // BINDING_OFFSET_BLUE_NOISE (owned by BlueNoise; only the view is kept).
     void SetBlueNoiseImageView(VkImageView blueNoiseView);
@@ -89,6 +99,9 @@ private:
     VkDescriptorPool      descPool;
     VkDescriptorSetLayout descSetLayout;
     VkDescriptorSet       descSet;
+
+    // Set when the images are (re)created; cleared by TransitionImagesToGeneral.
+    bool needsImageTransition;
 };
 
 }

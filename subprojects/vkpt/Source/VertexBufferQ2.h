@@ -38,6 +38,8 @@ public:
 
 private:
     void CreateDescriptors();
+    void FillLightBuffer();
+    void FillSunColor();
 
 private:
     VkDevice device;
@@ -49,6 +51,10 @@ private:
     // Real backing for the tone mapping buffer (histogram accumulator +
     // tone curve), written by the tone mapping shaders.
     Buffer toneMappingBuffer;
+
+    // Real backing for the Q2RTX LightBuffer (material table + light
+    // lists), host-visible so the default material can be written from CPU.
+    Buffer lightBuffer;
 
     // Real backing for the readback buffer (a few pixels read back to the
     // CPU every frame), written by asvgf_taau.comp.

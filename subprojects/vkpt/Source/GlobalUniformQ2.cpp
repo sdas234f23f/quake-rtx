@@ -10,6 +10,7 @@
 #include "CmdLabel.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 using namespace vkpt;
@@ -28,6 +29,31 @@ void FillUniformBuffer(QVKUniformBuffer_t &ubo, const ShGlobalUniform &src)
     UBO_CVAR_LIST
 #undef UBO_CVAR_DO
 
+    // Depth of field OFF. The UBO_CVAR_LIST default for pt_aperture is 2.0,
+    // and Q2RTX only ever gets away with that because main.c zeroes it unless
+    // the pt_dof cvar is set. Leaving it non-zero enables the aperture branch
+    // in get_primary_ray() (primary_rays.rgen), which is the ONE place in the
+    // whole Q2RTX shader set that assumes Q2RTX's own view convention:
+    //
+    //     vec3 forward = global_ubo.invV[2].xyz;
+    //     float distance = global_ubo.pt_focus / dot(view_dir, forward);
+    //     ray.direction = normalize(view_dir * distance - ray.origin);
+    //
+    // Our view matrix is the GL/Vulkan one the legacy renderer uses, where
+    // view +Z points BACKWARD, so invV[2] is the backward axis and the dot
+    // product comes out negative. distance goes to -pt_focus and the ray ends
+    // up pointing at -view_dir: the world renders upside down and mirrored,
+    // and moving forward looks like moving backward.
+    //
+    // Note the expression is invariant to negating view_dir (both view_dir
+    // and the dot product flip sign), so any attempt to "fix" the camera by
+    // flipping V/invV/P/invP changes nothing at all while this branch is live.
+    //
+    // Everything else in the chain (rectlinear_reverse + invV) is convention
+    // agnostic - it is the same composition the legacy getRayDir() computes -
+    // which is why the legacy renderer is correct with these very matrices.
+    ubo.pt_aperture = 0.0f;
+
     // Per-frame data, mirroring what Q2RTX main.c fills.
     ubo.current_frame_idx = static_cast<int>(src.frameId);
     ubo.width             = static_cast<int>(src.renderWidth);
@@ -38,10 +64,27 @@ void FillUniformBuffer(QVKUniformBuffer_t &ubo, const ShGlobalUniform &src)
     ubo.first_person_model = 1;
     ubo.environment_type   = 0;
 
-    // Default sun pointing down (a real value comes with the light port).
-    ubo.sun_direction[0] = 0.0f;
-    ubo.sun_direction[1] = -1.0f;
-    ubo.sun_direction[2] = 0.0f;
+    // Fake sun for the direct lighting pass (G5): a warm white sun overhead.
+    // sun_direction points TOWARD the sun. Quake 1 is Z-up. The real
+    // sky/sun comes with the sky port (G6); the 53-degree tilt makes walls
+    // facing +X visibly lit, unlike a strictly overhead sun.
+    ubo.sun_visible = 1;
+    ubo.sun_direction[0] = 0.6f;
+    ubo.sun_direction[1] = 0.0f;
+    ubo.sun_direction[2] = 0.8f;
+    ubo.sun_direction_envmap[0] = 0.6f;
+    ubo.sun_direction_envmap[1] = 0.0f;
+    ubo.sun_direction_envmap[2] = 0.8f;
+    ubo.sun_tangent[0] = 1.0f;  ubo.sun_tangent[1] = 0.0f; ubo.sun_tangent[2] = 0.0f;
+    ubo.sun_bitangent[0] = 0.0f; ubo.sun_bitangent[1] = 1.0f; ubo.sun_bitangent[2] = 0.0f;
+    ubo.sun_tan_half_angle = 0.0046f; // ~0.53 deg angular size
+    ubo.sun_cos_half_angle = 0.99999f;
+    ubo.sun_solid_angle = 0.0000665f;
+    ubo.sun_bounce_scale = 1.0f;
+    ubo.sun_color[0] = 1.0f;
+    ubo.sun_color[1] = 0.95f;
+    ubo.sun_color[2] = 0.85f;
+    ubo.pt_env_scale = 1.0f;
 
     // Camera.
     memcpy(ubo.cam_pos,  src.cameraPosition, 3 * sizeof(float));
@@ -59,6 +102,12 @@ void FillUniformBuffer(QVKUniformBuffer_t &ubo, const ShGlobalUniform &src)
     ubo.screen_image_height = ubo.height;
     ubo.inv_width           = 1.0f / static_cast<float>(ubo.width);
     ubo.inv_height          = 1.0f / static_cast<float>(ubo.height);
+
+    // Internal render resolution before any upscale. Q2RTX sets this from
+    // extent_unscaled (main.c:2790); we render at full resolution, so it
+    // equals width/height. tone_mapping_apply.comp divides by unscaled_height.
+    ubo.unscaled_width  = ubo.width;
+    ubo.unscaled_height = ubo.height;
 
     // Q2RTX bloom fields. taa_image == render resolution for now (no TAA
     // upscale yet); prev_taa_output starts at 0 on the first frame, which is

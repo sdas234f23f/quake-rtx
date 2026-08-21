@@ -50,9 +50,16 @@ public:
     // TLAS exists (level loaded).
     void DispatchPrimaryRays(VkCommandBuffer cmd, uint32_t width, uint32_t height);
 
+    // G5: direct lighting (sun + local lights) into the lighting channels
+    // (IMG_PT_COLOR_LF/HF/SPEC), consumed by the ASVGF chain.
+    void DispatchDirectLighting(VkCommandBuffer cmd, uint32_t width, uint32_t height);
+
 private:
     void CreatePipeline();
     void CreateShaderBindingTable();
+    void WriteSbtBlock(uint8_t *dstBase, VkPipeline pipeline, uint32_t blockIndex);
+    void DispatchRayTrace(VkCommandBuffer cmd, VkPipeline pipeline, uint32_t sbtBlock,
+                          uint32_t width, uint32_t height);
     void OnShaderReload(const ShaderManager *shaderManager);
 
 private:
@@ -68,6 +75,7 @@ private:
 
     VkPipelineLayout pipelineLayout;
     VkPipeline pipeline;
+    VkPipeline pipelineDirect;
 
     Buffer sbtBuffer;
     uint32_t groupBaseAlignment;
@@ -83,6 +91,7 @@ private:
     const char *shaderSprite;
     const char *shaderBeamRahit;
     const char *shaderBeamRint;
+    const char *shaderDirect;
 };
 
 }

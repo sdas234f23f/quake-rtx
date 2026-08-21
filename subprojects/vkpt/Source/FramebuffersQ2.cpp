@@ -9,6 +9,7 @@
 #include "../q2rtx-shaders/global_textures.h"
 
 #include <cstring>
+#include <utility>
 #include <vector>
 
 using namespace vkpt;
@@ -50,7 +51,8 @@ FramebuffersQ2::FramebuffersQ2(VkDevice _device,
     placeholderStorageView(VK_NULL_HANDLE),
     descPool(VK_NULL_HANDLE),
     descSetLayout(VK_NULL_HANDLE),
-    descSet(VK_NULL_HANDLE)
+    descSet(VK_NULL_HANDLE),
+    needsImageTransition(true)
 {
     // Value-initialize: DestroyImages() runs before the first Create() and
     // must not touch garbage handles.
@@ -111,6 +113,7 @@ void FramebuffersQ2::Create(uint32_t _width, uint32_t _height, uint32_t _deviceC
     width = _width;
     height = _height;
     deviceCount = _deviceCount;
+    needsImageTransition = true;
 
     // Sizes for the header macros. Full precision (render) resolution is
     // used for all extents for now; refined when the shaders get bound.
@@ -123,6 +126,55 @@ void FramebuffersQ2::Create(uint32_t _width, uint32_t _height, uint32_t _deviceC
     CreateWhiteTexture();
 
     UpdateDescriptors();
+}
+
+bool FramebuffersQ2::TakeImageTransition()
+{
+    return std::exchange(needsImageTransition, false);
+}
+
+void FramebuffersQ2::TransitionImagesToGeneral(VkCommandBuffer cmd)
+{
+    if (!images)
+    {
+        return;
+    }
+
+    std::vector<VkImageMemoryBarrier> barriers;
+    barriers.reserve(NUM_VKPT_IMAGES);
+    for (int i = 0; i < static_cast<int>(NUM_VKPT_IMAGES); i++)
+    {
+        if (!images[i].image)
+        {
+            continue;
+        }
+        VkImageMemoryBarrier b = {};
+        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        b.image = images[i].image;
+        b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.srcAccessMask = 0;
+        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        b.subresourceRange.baseMipLevel = 0;
+        b.subresourceRange.levelCount = 1;
+        b.subresourceRange.baseArrayLayer = 0;
+        b.subresourceRange.layerCount = 1;
+        barriers.push_back(b);
+    }
+
+    if (barriers.empty())
+    {
+        return;
+    }
+
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         0, 0, nullptr, 0, nullptr,
+                         static_cast<uint32_t>(barriers.size()), barriers.data());
 }
 
 void FramebuffersQ2::DestroyImages()
@@ -163,7 +215,7 @@ void FramebuffersQ2::CreateImages()
         info.samples = VK_SAMPLE_COUNT_1_BIT;                                 \
         info.tiling = VK_IMAGE_TILING_OPTIMAL;                                \
         info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | \
-                     VK_IMAGE_USAGE_TRANSFER_DST_BIT;                         \
+                     VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT; \
         CreateImageEntry(VKPT_IMG_##_name, info, #_name);                     \
     }
     LIST_IMAGES

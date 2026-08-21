@@ -263,6 +263,7 @@ qboolean           request_shaders_reload = false;
 	CVAR_DEF_T (rt_debugflags, "0") \
 	CVAR_DEF_T (rt_debug_lights, "0") \
 	CVAR_DEF_T (rt_q2bridge, "1") \
+	CVAR_DEF_T (rt_q2debug, "0") \
 
 
 #define CVAR_DEF_T(name, default_value) cvar_t name = {#name, default_value, CVAR_ARCHIVE};
@@ -4333,6 +4334,10 @@ static void RT_GL_EndRenderingTask (rt_end_rendering_parms_t *parms)
 	// G4: when enabled, the on-screen image comes from the Q2RTX chain
 	if (CVAR_TO_BOOL (rt_q2bridge))
 		debug_params.drawFlags |= RG_DEBUG_DRAW_Q2_BRIDGE_BIT;
+	// G5 debug: rt_q2debug selects which intermediate Q2 image the bridge
+	// blits (0 off/TAA_OUTPUT, 1 albedo, 2 ASVGF_COLOR, ...); packed in
+	// bits 16..19 (bit 12 is RG_DEBUG_DRAW_Q2_BRIDGE_BIT).
+	debug_params.drawFlags |= ((uint32_t)(CVAR_TO_UINT32 (rt_q2debug) & 0xF)) << 16;
 
 	float cameranear = GL_GetCameraNear (DEG2RAD (r_fovx), DEG2RAD (r_fovy));
 	float camerafar = GL_GetCameraFar ();

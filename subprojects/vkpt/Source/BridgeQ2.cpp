@@ -78,7 +78,8 @@ void BlitImage(VkCommandBuffer cmd,
 } // namespace
 
 void BridgeQ2::Run(VkCommandBuffer cmd, uint32_t frameIndex,
-                   uint32_t width, uint32_t height, float frameTime, bool enabled)
+                   uint32_t width, uint32_t height, float frameTime, bool enabled,
+                   uint32_t debugFlags)
 {
     if (!enabled || width == 0 || height == 0)
     {
@@ -88,20 +89,59 @@ void BridgeQ2::Run(VkCommandBuffer cmd, uint32_t frameIndex,
     VkImage legacyFinal = framebuffers->GetImage(FramebufferImageIndex::FB_IMAGE_INDEX_FINAL, frameIndex);
     VkImage q2TaaOutput = framebuffersQ2->GetImage(VKPT_IMG_TAA_OUTPUT);
 
-    if (legacyFinal == VK_NULL_HANDLE || q2TaaOutput == VK_NULL_HANDLE)
+    // G5 debug (rt_q2debug): blit an intermediate Q2 image instead of the
+    // final one. 0 = TAA_OUTPUT, 1 = albedo, 2 = ASVGF_COLOR,
+    // 3 = FLAT_COLOR (after checkerboard interleave), 4 = ASVGF_TAA_A (TAA
+    // history/output), 5 = PT_COLOR_HF (direct lighting), 6 =
+    // ASVGF_ATROUS_PING_HF (after temporal), 7 = ASVGF_TAA_B (TAA prev).
+    // Packed in bits 16..19: bit 12 is RG_DEBUG_DRAW_Q2_BRIDGE_BIT (4096)
+    // and always set while the bridge is on, so bits 12..15 were shifted by
+    // one (rt_q2debug N showed image N+1).
+    const uint32_t debugSrc = (debugFlags >> 16) & 0xF;
+    VkImage src = q2TaaOutput;
+    if (debugSrc == 1)
+    {
+        src = framebuffersQ2->GetImage(VKPT_IMG_PT_BASE_COLOR_A);
+    }
+    else if (debugSrc == 2)
+    {
+        src = framebuffersQ2->GetImage(VKPT_IMG_ASVGF_COLOR);
+    }
+    else if (debugSrc == 3)
+    {
+        src = framebuffersQ2->GetImage(VKPT_IMG_FLAT_COLOR);
+    }
+    else if (debugSrc == 4)
+    {
+        src = framebuffersQ2->GetImage(VKPT_IMG_ASVGF_TAA_A);
+    }
+    else if (debugSrc == 5)
+    {
+        src = framebuffersQ2->GetImage(VKPT_IMG_PT_COLOR_HF);
+    }
+    else if (debugSrc == 6)
+    {
+        src = framebuffersQ2->GetImage(VKPT_IMG_ASVGF_ATROUS_PING_HF);
+    }
+    else if (debugSrc == 7)
+    {
+        src = framebuffersQ2->GetImage(VKPT_IMG_ASVGF_TAA_B);
+    }
+
+    if (legacyFinal == VK_NULL_HANDLE || src == VK_NULL_HANDLE)
     {
         return;
     }
 
-    // The Q2RTX chain (primary rays -> ASVGF -> compositing -> TAA upscale)
-    // already produced TAA_OUTPUT in DrawFrame. Finish with bloom + tone
-    // mapping, then copy the result into the legacy FINAL image so the rest
-    // of the legacy pipeline (upscale, effects, present) shows it.
-    bloomQ2->Dispatch(cmd, width, height);
-    toneMappingQ2->Dispatch(cmd, width, height, frameTime);
+    // Bloom + tone mapping only on the real final image (TAA_OUTPUT).
+    if (src == q2TaaOutput)
+    {
+        bloomQ2->Dispatch(cmd, width, height);
+        toneMappingQ2->Dispatch(cmd, width, height, frameTime);
+    }
 
-    // Q2 IMG_TAA_OUTPUT -> legacy FINAL
-    BarrierImage(cmd, q2TaaOutput,
+    // Q2 source image -> legacy FINAL
+    BarrierImage(cmd, src,
                  VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -110,11 +150,11 @@ void BridgeQ2::Run(VkCommandBuffer cmd, uint32_t frameIndex,
                  VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
 
-    BlitImage(cmd, q2TaaOutput, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    BlitImage(cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
               legacyFinal, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, width, height);
 
     // back to GENERAL for the rest of the legacy pipeline
-    BarrierImage(cmd, q2TaaOutput,
+    BarrierImage(cmd, src,
                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
                  VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);

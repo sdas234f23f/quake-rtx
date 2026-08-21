@@ -107,9 +107,9 @@ void AsvgfLfQ2::Dispatch(VkCommandBuffer cmd, uint32_t width, uint32_t height)
     {
         barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barriers[i].image = framebuffersQ2->GetImage(IMAGES_USED[i]);
-        barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
         barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        barriers[i].srcAccessMask = 0;
+        barriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         barriers[i].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
         barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -121,7 +121,7 @@ void AsvgfLfQ2::Dispatch(VkCommandBuffer cmd, uint32_t width, uint32_t height)
     }
 
     vkCmdPipelineBarrier(cmd,
-                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0, 0, nullptr, 0, nullptr,
                          static_cast<uint32_t>(barriers.size()), barriers.data());

@@ -932,10 +932,11 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
     // frame. When off, the legacy renderer's image is shown unchanged.
     bool bridgeEnabled = drawInfo.pDebugParams != nullptr &&
                          (drawInfo.pDebugParams->drawFlags & RG_DEBUG_DRAW_Q2_BRIDGE_BIT) != 0;
+    uint32_t bridgeDebugFlags = drawInfo.pDebugParams != nullptr ? drawInfo.pDebugParams->drawFlags : 0;
     bridgeQ2->Run(cmd, frameIndex,
                   renderResolution.Width(), renderResolution.Height(),
                   static_cast<float>(currentFrameTime - previousFrameTime),
-                  bridgeEnabled);
+                  bridgeEnabled, bridgeDebugFlags);
 
 
     bool enableBloom = drawInfo.pBloomParams == nullptr || (drawInfo.pBloomParams != nullptr && drawInfo.pBloomParams->bloomIntensity > 0.0f);
@@ -1137,20 +1138,49 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
         uniformQ2->Upload(cmd, currentFrameState.GetFrameIndex(), uniform->GetData());
         framebuffersQ2->Create(renderResolution.Width(), renderResolution.Height(), 1);
 
+        // Q2RTX keeps all framebuffer images in GENERAL; transition them
+        // once right after (re)creation so the ray tracing imageStore /
+        // imageLoad calls see a valid layout.
+        if (framebuffersQ2->TakeImageTransition())
+        {
+            framebuffersQ2->TransitionImagesToGeneral(cmd);
+        }
+
         // Q2RTX frame (PORTING.md, G4): sky resolve, primary rays into the
         // G-buffer, ASVGF denoise (gradient -> temporal -> LF -> a-trous),
         // compositing, checkerboard interleave, TAA upscale. Bloom + tone
         // mapping run inside the BridgeQ2 control point, on the final
         // TAA_OUTPUT image.
         skyBufferResolveQ2->Dispatch(cmd);
+        // Make the sky-resolve buffer writes (sun/sky color, readback) visible
+        // to the ray tracing passes below (compute -> ray tracing memory
+        // dependency; without it the sun color can read stale zeros).
+        {
+            VkMemoryBarrier barrier = {};
+            barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cmd,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                                 0, 1, &barrier, 0, nullptr, 0, nullptr);
+        }
         pathTracerQ2->DispatchPrimaryRays(cmd, renderResolution.Width(), renderResolution.Height());
+        // G5: direct lighting (sun) into the lighting channels, consumed by
+        // the ASVGF chain below.
+        pathTracerQ2->DispatchDirectLighting(cmd, renderResolution.Width(), renderResolution.Height());
 
         asvgfGradientImgQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         asvgfTemporalQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         asvgfLfQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         asvgfAtrousQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
 
-        compositingQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
+        // NOTE: no separate compositing pass here. Q2RTX runs compositing.comp
+        // only when the denoiser is disabled; with the denoiser on (flt_enable),
+        // the last atrous iteration (spec_iteration == 3) already composites
+        // into IMG_ASVGF_COLOR in checkerboarded layout. Running compositingQ2
+        // afterwards would overwrite it.
+
         shaderSwapQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
         asvgfTaaQ2->Dispatch(cmd, renderResolution.Width(), renderResolution.Height());
 

@@ -35,13 +35,15 @@ static_assert(sizeof(QvkGeometryInstance) == 64, "Q2RTX TLAS instance must be 64
 namespace
 {
 
-// Column-major identity, matching what Q2RTX writes into QvkGeometryInstance.
+// Identity for the VkTransformMatrixKHR instance transform: 3 rows x 4
+// columns, exactly like Q2RTX writes into QvkGeometryInstance.
+// (The previous layout - four groups of three - collapsed every triangle
+// onto the line y = z = x, so no ray could ever hit anything.)
 const float IDENTITY_12[12] =
 {
-    1.0f, 0.0f, 0.0f,
-    0.0f, 1.0f, 0.0f,
-    0.0f, 0.0f, 1.0f,
-    0.0f, 0.0f, 0.0f,
+    1.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, 1.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 1.0f, 0.0f,
 };
 
 } // namespace
@@ -117,6 +119,7 @@ ASManagerQ2::~ASManagerQ2()
 void ASManagerQ2::SubmitStatic()
 {
     worldPrimCount = geometryQ2->GetWorldPrimitiveCount();
+
     if (worldPrimCount == 0 || !geometryQ2->GetWorldBuffer())
     {
         return;
@@ -223,7 +226,12 @@ void ASManagerQ2::BuildTLAS(VkCommandBuffer cmd)
     geomInst.instance_id = VERTEX_BUFFER_WORLD; // == 0, the world primitive buffer
     geomInst.mask = AS_FLAG_OPAQUE;
     geomInst.instance_offset = SBTO_OPAQUE;
-    geomInst.flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
+    // Q2RTX keeps the world double-sided: primary rays flip the surface
+    // normal in the shader when a triangle is hit from behind, so the world
+    // instance disables face culling (same flags Q2RTX sets for the world
+    // BLAS in its own TLAS fill).
+    geomInst.flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR |
+                     VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
     geomInst.acceleration_structure = blasAddress;
 
     // Effects TLAS slot: same BLAS, but zero mask so rays never hit it.
@@ -232,7 +240,7 @@ void ASManagerQ2::BuildTLAS(VkCommandBuffer cmd)
     effectInst.instance_id = 0;
     effectInst.mask = 0;
     effectInst.instance_offset = SBTO_OPAQUE;
-    effectInst.flags = 0;
+    effectInst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
     effectInst.acceleration_structure = blasAddress;
 
     instanceBuffer.Unmap();
@@ -398,7 +406,9 @@ void ASManagerQ2::CreateDescSet()
         VkBufferViewCreateInfo viewInfo = {};
         viewInfo.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO;
         viewInfo.buffer = texelBuffers[i].GetBuffer();
-        viewInfo.format = VK_FORMAT_R32_UINT;
+        // The Q2RTX hit shaders sample these texel buffers as float
+        // (texelFetch on float texelBuffer), so the view must be R32_SFLOAT.
+        viewInfo.format = VK_FORMAT_R32_SFLOAT;
         viewInfo.offset = 0;
         viewInfo.range = 4;
 

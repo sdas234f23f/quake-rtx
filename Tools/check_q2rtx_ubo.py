@@ -144,9 +144,11 @@ def parse_struct_blocks(text, consts=None):
     return structs
 
 
-def parse_macro_list(text, macro_name):
+def parse_macro_list(text, macro_name, consts=None):
     """Extract (type, name, count) entries from a multiline macro like
-    `#define GLOBAL_UBO_VAR_LIST \\ ... GLOBAL_UBO_VAR_LIST_DO(type, name) \\`."""
+    `#define GLOBAL_UBO_VAR_LIST \\ ... GLOBAL_UBO_VAR_LIST_DO(type, name) \\`.
+    Array sizes may be literals or constant names resolved via `consts`."""
+    consts = consts or {}
     # find the macro body until an unescaped newline ends it
     body_match = re.search(r"#define\s+" + macro_name + r"\s+\\\n(.*?)(?=\n\S)",
                            text, re.DOTALL)
@@ -156,11 +158,20 @@ def parse_macro_list(text, macro_name):
     entries = []
     for line in body.splitlines():
         line = line.replace("\\", "").strip()
-        m = re.match(r"GLOBAL_UBO_VAR_LIST_DO\(\s*([\w]+)\s*,\s*(\w+)\s*(?:\[(\d+)\])?\s*\)",
+        m = re.match(r"GLOBAL_UBO_VAR_LIST_DO\(\s*([\w]+)\s*,\s*(\w+)\s*(?:\[(\w+)\])?\s*\)",
                      line)
         if m:
-            entries.append((m.group(1), m.group(2),
-                            int(m.group(3)) if m.group(3) else 1))
+            count = 1
+            if m.group(3):
+                c = m.group(3)
+                if c.isdigit():
+                    count = int(c)
+                elif c in consts and isinstance(consts[c], int):
+                    count = consts[c]
+                else:
+                    raise ValueError(
+                        f"cannot resolve array size '{c}' in {macro_name}")
+            entries.append((m.group(1), m.group(2), count))
     return entries
 
 
@@ -172,7 +183,8 @@ def parse_cvar_list(text):
         return []
     entries = []
     for line in body_match.group(1).splitlines():
-        m = re.match(r"UBO_CVAR_DO\(\s*(\w+)\s*,\s*[\w.\-]+\s*\)", line)
+        line = line.replace("\\", "").strip()
+        m = re.match(r"UBO_CVAR_DO\(\s*(\w+)\s*,\s*([\w.\-]+)\s*\)", line)
         if m:
             entries.append(("float", m.group(1), 1))
     return entries
@@ -252,12 +264,15 @@ def main():
 
     consts = parse_constants(CONSTANTS)
     structs = parse_struct_blocks(text, consts)
-    fields = parse_macro_list(text, "GLOBAL_UBO_VAR_LIST")
+    fields = parse_macro_list(text, "GLOBAL_UBO_VAR_LIST", consts)
     fields += parse_cvar_list(text)
 
     if not fields:
         print("> could not parse GLOBAL_UBO_VAR_LIST from", HEADER)
         return 1
+
+    c_entries, c_total, _ = compute_layout(fields, structs, c_align, c_size)
+    print(f"> parsed {len(fields)} fields, computed UBO size = {c_total} B")
 
     ok, msg = check_struct(fields, structs, "UBO (QVKUniformBuffer_t)")
     print(f"> fields: {len(fields)}")

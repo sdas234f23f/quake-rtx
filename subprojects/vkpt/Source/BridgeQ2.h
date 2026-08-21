@@ -40,8 +40,11 @@ public:
     // When enabled, runs bloom + tone mapping on the Q2RTX TAA_OUTPUT image
     // and blits the result into the legacy FINAL image. Otherwise does
     // nothing (the legacy image stays on screen).
+    // debugFlags bits 12..15 (rt_q2debug): 0 = TAA_OUTPUT, 1 = PT_BASE_COLOR_A,
+    // 2 = ASVGF_COLOR (temporary G5 diagnostics).
     void Run(VkCommandBuffer cmd, uint32_t frameIndex,
-             uint32_t width, uint32_t height, float frameTime, bool enabled);
+             uint32_t width, uint32_t height, float frameTime, bool enabled,
+             uint32_t debugFlags);
 
 private:
     VkDevice device;
