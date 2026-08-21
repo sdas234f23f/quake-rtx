@@ -1092,7 +1092,17 @@ get_material(
         {
             roughness = AdjustRoughnessToksvig(roughness, normalMapLen, effective_mip);
         }
-    } 
+    }
+	else
+	{
+		// G6 port: Q2RTX assumes every surface has a normals texture and
+		// applies metalness/roughness only in the branch above. Before the
+		// texture port (G6b) all texture indices are 0, so take the factors
+		// from the material table directly instead.
+		metallic = clamp(minfo.metalness_factor, 0, 1);
+		if (minfo.roughness_override >= 0)
+			roughness = minfo.roughness_override;
+	}
 
     if(global_ubo.pt_roughness_override >= 0) roughness = global_ubo.pt_roughness_override;
     if(global_ubo.pt_metallic_override >= 0) metallic = global_ubo.pt_metallic_override;
