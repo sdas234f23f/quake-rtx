@@ -8,6 +8,7 @@
 #include "../q2rtx-shaders/constants.h"
 #include "../q2rtx-shaders/vertex_buffer.h"
 
+#include <cstring>
 #include <vector>
 
 using namespace vkpt;
@@ -113,6 +114,34 @@ void VertexBufferQ2::FillLightBuffer()
     {
         lb->sky_visibility[i] = ~0u;
     }
+
+    lightBuffer.Unmap();
+}
+
+void VertexBufferQ2::SetQ2Materials(const uint32_t *entries, uint32_t count)
+{
+    if (!entries || count == 0)
+    {
+        return;
+    }
+
+    // Entries are indexed from 2 in the geometry material ids (0 = empty,
+    // 1 = default white); overwrite only that tail of the table.
+    const uint32_t maxCount = MAX_PBR_MATERIALS - 2;
+    if (count > maxCount)
+    {
+        count = maxCount;
+    }
+
+    void *mapped = lightBuffer.Map();
+    if (!mapped)
+    {
+        return;
+    }
+
+    LightBuffer *lb = static_cast<LightBuffer *>(mapped);
+    std::memcpy(lb->material_table + 2 * MATERIAL_UINTS, entries,
+                static_cast<size_t>(count) * MATERIAL_UINTS * sizeof(uint32_t));
 
     lightBuffer.Unmap();
 }

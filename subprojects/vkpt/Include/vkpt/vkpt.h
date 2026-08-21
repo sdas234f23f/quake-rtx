@@ -379,6 +379,22 @@ typedef enum RgGeometryUploadFlagBits
 } RgGeometryUploadFlagBits;
 typedef RgFlags RgGeometryUploadFlags;
 
+// Q2RTX port (stage G6): per-surface material resolved by the game from the
+// Q2RTX-style .mat system (rt_material.h) and passed with each geometry
+// upload. The Q2 renderer packs it into the Q2RTX material_table. Null means
+// "use the default material".
+typedef struct RgQ2Material
+{
+    float                           roughness_override; // <= 0: use defaultRoughness
+    float                           metalness_factor;
+    float                           emissive_factor;
+    float                           specular_factor;
+    float                           base_factor;
+    float                           bump_scale;
+    int                             kind;      // RT_MAT_KIND_* (rt_material.h)
+    int                             is_light;  // surface emits light
+} RgQ2Material;
+
 typedef struct RgGeometryUploadInfo
 {
     uint64_t                        uniqueID;
@@ -413,6 +429,9 @@ typedef struct RgGeometryUploadInfo
 
     RgLayeredMaterial               geomMaterial;
     RgTransform                     transform;
+
+    // Q2RTX port: optional resolved per-surface material, see RgQ2Material.
+    const RgQ2Material             *pQ2Material;
 } RgGeometryUploadInfo;
 
 typedef struct RgUpdateTransformInfo

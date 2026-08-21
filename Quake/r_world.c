@@ -25,6 +25,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "atomics.h"
+#include "rt_material.h"
 
 extern cvar_t gl_fullbrights;
 extern cvar_t r_drawflat;
@@ -1635,6 +1636,30 @@ static void RT_FlushBatch (rt_cb_context_t *cbx, const rt_uploadsurf_state_t *s,
 			.defaultEmission = 0,
 			.transform = RT_GetBrushModelMatrix (s->ent),
 		};
+
+		// Q2RTX port (G6): resolve the Q2RTX-style .mat material for this
+		// surface and pass it with the upload so the Q2 renderer can fill
+		// its material_table with the per-surface PBR factors.
+		ZEROED_STRUCT (RgQ2Material, q2material);
+		{
+			rt_material_t autoMat;
+			rt_material_t *mat = diffuse_tex ? RT_MAT_Find (diffuse_tex->name) : NULL;
+			if (!mat && diffuse_tex && RT_MAT_AutoDetect (diffuse_tex->name, &autoMat))
+				mat = &autoMat;
+
+			if (mat)
+			{
+				q2material.roughness_override = mat->roughness_override;
+				q2material.metalness_factor = mat->metalness_factor;
+				q2material.emissive_factor = mat->emissive_factor;
+				q2material.specular_factor = mat->specular_factor;
+				q2material.base_factor = mat->base_factor;
+				q2material.bump_scale = mat->bump_scale;
+				q2material.kind = mat->kind;
+				q2material.is_light = mat->is_light;
+				info.pQ2Material = &q2material;
+			}
+		}
 
 		if (s->is_teleport && !CVAR_TO_BOOL (rt_classic_render))
 		{

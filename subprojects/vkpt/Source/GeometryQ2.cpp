@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 
@@ -112,7 +113,8 @@ GeometryQ2::GeometryQ2(VkDevice _device,
   vertexBufferQ2(std::move(_vertexBufferQ2)),
   uploadFence(VK_NULL_HANDLE),
   worldPrimCount(0),
-  hasWorldData(false)
+  hasWorldData(false),
+  materialCount(0)
 {
     VkFenceCreateInfo fenceInfo = {};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -136,6 +138,11 @@ void GeometryQ2::BeginStaticUpload()
     world.positions.clear();
     worldPrimCount = 0;
     hasWorldData = false;
+
+    // Materials are collected per level load, entries uploaded in
+    // SubmitStatic. Stale entries from the previous map are dropped.
+    materialTable.clear();
+    materialCount = 0;
 }
 
 void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
@@ -179,6 +186,85 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
             out[2] /= len;
         }
     };
+
+    // Stage G6: build the per-surface Q2 material table entry. The game
+    // resolves the Q2RTX-style .mat data through uploadInfo.pQ2Material
+    // (filled by r_world.c); when no material is defined, fall back to the
+    // cvar defaults from the upload info so the Q2 table always mirrors
+    // rt_brush_rough / rt_brush_metal. The entry format is the 6-uint
+    // layout of get_material_info in vertex_buffer.h; entries are
+    // de-duplicated. Index 0 is empty, index 1 is the startup default.
+    // Base/normal/emissive/mask texture indices stay 0 (white) until the
+    // texture port (G6b). Kinds are forced to REGULAR for now - WATER/
+    // GLASS/SKY paths need their textures and special handling.
+    const RgQ2Material *qm = uploadInfo.pQ2Material;
+
+    uint32_t entry[MATERIAL_UINTS];
+    entry[0] = 0; // base_texture | normals_texture << 16
+    entry[1] = 0; // emissive_texture | mask_texture << 16
+    entry[4] = 1; // num_frames | next_frame << 16
+
+    const float roughness = (qm && qm->roughness_override > 0.0f)
+                                ? qm->roughness_override
+                                : uploadInfo.defaultRoughness;
+    const float metalness = qm ? qm->metalness_factor : uploadInfo.defaultMetallicity;
+    // Until the emissive texture port (G6b) the emissive factor is only
+    // meaningful for light surfaces: a plain surface with a _luma
+    // texture carries emissive_factor 1.0 from the game side, and
+    // without the emissive texture it would glow white completely.
+    const float emissive = (qm && qm->is_light) ? qm->emissive_factor : 0.0f;
+    const float specular = (qm && qm->specular_factor > 0.0f) ? qm->specular_factor : 0.5f;
+    const float baseFactor = (qm && qm->base_factor > 0.0f) ? qm->base_factor : 1.0f;
+    const float bump = qm ? qm->bump_scale : 0.0f;
+
+    entry[2] = PackHalf2x16(std::clamp(bump, 0.0f, 1.0f),
+                            std::clamp(roughness, 0.0f, 1.0f));
+    entry[3] = PackHalf2x16(std::clamp(metalness, 0.0f, 1.0f),
+                            std::clamp(emissive, 0.0f, 1.0f));
+    entry[5] = PackHalf2x16(std::clamp(specular, 0.0f, 1.0f),
+                            std::clamp(baseFactor, 0.0f, 1.0f));
+
+    uint32_t materialId = 1;
+    uint32_t index = UINT32_MAX;
+    for (uint32_t i = 0; i < materialCount; i++)
+    {
+        if (std::memcmp(materialTable.data() + i * MATERIAL_UINTS, entry,
+                        sizeof(entry)) == 0)
+        {
+            index = i;
+            break;
+        }
+    }
+    if (index == UINT32_MAX)
+    {
+        if (materialCount + 2 >= MAX_PBR_MATERIALS)
+        {
+            // Overflow: fall back to the default material.
+            materialId = 1;
+        }
+        else
+        {
+            index = materialCount;
+            materialCount++;
+            materialTable.insert(materialTable.end(), entry, entry + MATERIAL_UINTS);
+            materialId = 2 + index;
+        }
+    }
+    else
+    {
+        materialId = 2 + index;
+    }
+
+    if (materialId != 1)
+    {
+        // Real kinds (WATER/GLASS/SKY/...) are enabled with the texture
+        // port; light surfaces already emit via MATERIAL_FLAG_LIGHT.
+        materialId |= MATERIAL_KIND_REGULAR;
+        if (qm && qm->is_light)
+        {
+            materialId |= MATERIAL_FLAG_LIGHT;
+        }
+    }
 
     for (uint32_t t = 0; t < triCount; t++)
     {
@@ -248,10 +334,10 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
             *normalOut = normalEnc;
         }
 
-        // uv / material / cluster / shell. A default material (index 1, the
-        // white placeholder in material_table) until the real material table
-        // port; alpha comes from the first layer.
-        prim.material_id = 1;
+        // uv / material / cluster / shell. The material id was resolved from
+        // the per-upload Q2 material above (index + MATERIAL_KIND_REGULAR +
+        // optional MATERIAL_FLAG_LIGHT). Alpha comes from the first layer.
+        prim.material_id = materialId;
         prim.uv0[0] = uploadInfo.pVertices[idx[0]].texCoord[0];
         prim.uv0[1] = uploadInfo.pVertices[idx[0]].texCoord[1];
         prim.uv1[0] = uploadInfo.pVertices[idx[0]].texCoordLayer1[0];
@@ -287,6 +373,13 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
 
 void GeometryQ2::SubmitStatic()
 {
+    // Upload the per-surface material table collected during the static
+    // uploads, even if there is no geometry (the table can outlive it).
+    if (materialCount > 0)
+    {
+        vertexBufferQ2->SetQ2Materials(materialTable.data(), materialCount);
+    }
+
     if (!hasWorldData || world.primitives.empty())
     {
         return;

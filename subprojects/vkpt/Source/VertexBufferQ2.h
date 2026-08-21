@@ -36,6 +36,12 @@ public:
     void SetWorldBufferInfo(const VkDescriptorBufferInfo &primInfo,
                             const VkDescriptorBufferInfo &posInfo);
 
+    // Stage G6: overwrite the material_table entries starting at material
+    // index 2 (0 = empty, 1 = default white). entries has count * 6 uints
+    // packed like Q2RTX material_table (get_material_info format). Called
+    // by GeometryQ2::SubmitStatic after the static level uploads.
+    void SetQ2Materials(const uint32_t *entries, uint32_t count);
+
 private:
     void CreateDescriptors();
     void FillLightBuffer();

@@ -74,6 +74,14 @@ private:
     VkFence uploadFence;
     uint32_t worldPrimCount;
     bool hasWorldData;
+
+    // Q2 material table entries collected from RgGeometryUploadInfo::
+    // pQ2Material during static uploads: MATERIAL_UINTS uints per entry,
+    // packed like Q2RTX material_table (vertex_buffer.h). Material index 0
+    // is empty, 1 is the default white material. Written to the LightBuffer
+    // in SubmitStatic (stage G6).
+    std::vector<uint32_t> materialTable;
+    uint32_t materialCount;
 };
 
 }
