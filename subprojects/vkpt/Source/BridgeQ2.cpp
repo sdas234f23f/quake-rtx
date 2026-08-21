@@ -93,7 +93,8 @@ void BridgeQ2::Run(VkCommandBuffer cmd, uint32_t frameIndex,
     // final one. 0 = TAA_OUTPUT, 1 = albedo, 2 = ASVGF_COLOR,
     // 3 = FLAT_COLOR (after checkerboard interleave), 4 = ASVGF_TAA_A (TAA
     // history/output), 5 = PT_COLOR_HF (direct lighting), 6 =
-    // ASVGF_ATROUS_PING_HF (after temporal), 7 = ASVGF_TAA_B (TAA prev).
+    // ASVGF_ATROUS_PING_HF (after temporal), 7 = ASVGF_TAA_B (TAA prev),
+    // 8 = PT_METALLIC_A (red = metallic, green = roughness, G6 diagnostic).
     // Packed in bits 16..19: bit 12 is RG_DEBUG_DRAW_Q2_BRIDGE_BIT (4096)
     // and always set while the bridge is on, so bits 12..15 were shifted by
     // one (rt_q2debug N showed image N+1).
@@ -126,6 +127,12 @@ void BridgeQ2::Run(VkCommandBuffer cmd, uint32_t frameIndex,
     else if (debugSrc == 7)
     {
         src = framebuffersQ2->GetImage(VKPT_IMG_ASVGF_TAA_B);
+    }
+    else if (debugSrc == 8)
+    {
+        // G6 diagnostic: shows the primary G-buffer metallic/roughness.
+        // R8G8 image blitted into the R8G8B8A8 FINAL -> red = metallic.
+        src = framebuffersQ2->GetImage(VKPT_IMG_PT_METALLIC_A);
     }
 
     if (legacyFinal == VK_NULL_HANDLE || src == VK_NULL_HANDLE)
