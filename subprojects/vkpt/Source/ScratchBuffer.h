@@ -48,7 +48,7 @@ private:
     struct ChunkBuffer
     {
         Buffer buffer;
-        uint32_t currentOffset = 0;
+        VkDeviceSize currentOffset = 0;
     };
 
     std::weak_ptr<MemoryAllocator> allocator;

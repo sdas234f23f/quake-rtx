@@ -91,6 +91,11 @@ Done:
   removed in G6c.
 - **G6a**: per-surface Q2 material table from the `.mat` system
   (roughness / metalness / specular / base factor), no textures yet.
+- **G1b (implemented; visual validation pending)**: solid dynamic geometry
+  (pickups/ammo/health, monsters, world and view weapons, moving brush models)
+  is submitted through the Q2 ray tracing chain. See the dedicated section
+  below for its deliberate omissions (sprites, particles, beams, dynamic
+  emissive lights).
 
 Frame today: primary rays → ASVGF → compositing → interleave → TAAU → bloom +
 tone mapping → screen. The legacy renderer still renders its own full frame in
@@ -132,7 +137,10 @@ Still open in this stage:
 - `.mat is_light` static surfaces now join the existing polygonal-light path.
   The material synthesis records average linear emissive RGB while source
   pixels are available; `RT_FlushBatch` uses it to populate the atomic world
-  triangle list. Dynamic emissive brush/model surfaces remain part of G1b.
+  triangle list. Dynamic emissive brush/model surfaces still produce no
+  light polys (G1b renders them as solid geometry only; see the G1b section
+  above) — that remains open, deliberately deferred alongside sprites,
+  particles, and beams.
 - ~~The 32 point lights were chosen arbitrarily.~~ Fixed: all spherical
   uploads are ranked against the current camera by Q2 luminance / distance
   squared, and only the best `MAX_LIGHT_SOURCES` reach the UBO. Selected
@@ -217,11 +225,97 @@ Small but blocking for temporal quality; see the defect list below.
 Add `asvgf_gradient_reproject` (trace command buffer, before lighting) and
 `asvgf_gradient_atrous` (7 iterations, inside the filter). See the defect list.
 
-#### G1b — dynamic geometry
+#### G1b — dynamic geometry (implemented; visual validation pending)
 
-Alias models, sprites, particles and beams into the Q2 acceleration structure
-and `InstanceBuffer`; dynamic model lights appended to the light lists per
-frame (Q2RTX `instance_model_lights`).
+Solid dynamic geometry (pickups/ammo/health, monsters, world weapons, the
+first-person view weapon, and moving brush models — doors, plats, trains)
+is now routed through the Q2 ray tracing chain. One world-space aggregate
+buffer contains separate contiguous ranges for world, view-weapon, and
+viewer-model geometry; each non-empty range gets its own BLAS/TLAS instance.
+Sprites, particles, beams, and the effects TLAS remain explicitly deferred
+(see below).
+
+- **Collection**: `GeometryQ2::AddDynamicGeometry` receives every
+  solid `RG_GEOMETRY_TYPE_DYNAMIC` upload (`r_alias.c`
+  monsters/pickups/weapons, `r_world.c` moving brush surfaces, `r_brush.c`
+  debug polys) and converts
+  it with the exact same per-triangle pipeline as static geometry (shared
+  `GeometryQ2::AppendGeometry` helper, extracted from the old
+  `AddStaticGeometry` body) — octahedral normals, tangent/handedness, the same
+  material-table dedup capped at `MAX_PBR_MATERIALS`. Vertices are transformed
+  to world space on the CPU with `uploadInfo.transform`, so no per-entity BLAS
+  or `ModelInstance` transform is required for visibility.
+  - **Sky and sprites are filtered out**: sky needs its deferred material and
+    `AS_FLAG_SKY` path; treating it as solid world geometry would block rays.
+    Every geometry
+    `uniqueID` encodes a stable "kind" in its top 4 bits
+    (`Quake/gl_rmisc.c`: `RT_Get{BrushSurf,AliasModel,SpriteModel,CustomObject}UniqueId`
+    use 1/2/3/4). `AddDynamicGeometry` drops kind 3 (sprite) uploads; particles
+    and beams never call `rgUploadGeometry` at all, so no other game-side
+    change was needed. This is Q2 GeometryQ2-local — the legacy renderer's
+    sprite/particle/beam handling is untouched.
+  - **View weapon**: uploads with `visibilityType ==
+    RG_GEOMETRY_VISIBILITY_TYPE_FIRST_PERSON` get `MATERIAL_FLAG_WEAPON`
+    OR'd into `material_id`, an existing flag the Q2RTX rgen shaders already
+    special-case (checkerboard weapon rendering, brightness, handedness) —
+    no shader change needed.
+- **Motion vectors**: `GeometryQ2` keeps a `uniqueID -> previous world-space
+  positions` map (`dynamicHistory`). Each frame, if an incoming upload's
+  triangle count matches its previous frame's history, the per-vertex
+  `previous - current` delta is packed into `VboPrimitive.custom0/1/2` with
+  `PackHalf2x16` (matching `packHalf4x16(vec4(delta, 0))` in
+  `vertex_buffer.h`); new or topology-changed geometry gets a zero delta.
+  IDs that stop uploading (freed pickups, dead monsters, doors that finished
+  moving) are pruned after each frame's submission so a reused `uniqueID`
+  slot never inherits a stale delta.
+- **Aggregation & upload**: all of one frame's dynamic triangles land in one
+  `VboPrimitive` + BLAS-source-position buffer
+  (`GeometryQ2::SubmitDynamic(frameIndex)`), uploaded to a host-visible
+  coherent `Buffer` and bound at `PRIMITIVE_BUFFER_BINDING_IDX` array element
+  `VERTEX_BUFFER_INSTANCED` (1) via `VertexBufferQ2::SetDynamicBufferInfo`.
+  World, `FIRST_PERSON`, and `FIRST_PERSON_VIEWER` uploads occupy contiguous
+  ranges whose primitive and position offsets are retained for AS construction
+  and hit-shader addressing.
+  The material table is re-uploaded to the GPU every frame it is non-empty
+  (not just once at load), since dynamic uploads can introduce new material
+  entries (monster/pickup skins never seen in the static level geometry).
+- **Acceleration structures**: `ASManagerQ2` builds one dynamic BLAS for each
+  non-empty range and a combined geometry TLAS with the static world instance
+  plus those active category instances. All use `SBTO_MASKED`: materials
+  without an alpha mask accept immediately, while alpha-tested albedo can
+  discard. Dynamic instances use identity transforms and
+  `instance_id = VERTEX_BUFFER_INSTANCED`; their exclusive masks are
+  `AS_FLAG_OPAQUE`, `AS_FLAG_VIEWER_WEAPON`, and `AS_FLAG_VIEWER_MODELS`.
+  Every active dynamic TLAS entry keeps
+  `tlas_instance_model_indices[instance] = -1` and records its category's
+  `primitiveOffset`, so `get_model_index_and_prim_offset` takes the world path
+  while addressing the correct range in the aggregate primitive buffer.
+- **Frame safety**: everything that must change every frame (`GeometryQ2`'s
+  dynamic buffer, `ASManagerQ2`'s category BLAS / combined TLAS / TLAS instance
+  buffer / descriptor set 0 / scratch allocator, and `VertexBufferQ2`'s
+  descriptor set 3) is
+  ring-buffered with `MAX_FRAMES_IN_FLIGHT` slots selected by `frameIndex`,
+  mirroring `FramebuffersQ2`'s existing `descSets[MAX_FRAMES_IN_FLIGHT]` +
+  `activeFrameIndex` + no-arg `GetDescSet()` pattern, so `PathTracerQ2` and the
+  other `GetDescSet()` consumers need no changes. `SubmitDynamic` resets only
+  the current frame slot's scratch allocator after `BeginFrame` has waited that
+  slot's fence. A build-stage write-to-read barrier orders all BLAS builds
+  before the combined TLAS build; the existing build-to-ray barrier remains
+  after TLAS construction. `VulkanDevice::BeginFrame` calls
+  `geometryQ2->BeginDynamicUpload()`; `UploadGeometry` dispatches
+  `AddDynamicGeometry`/`AddStaticGeometry` by `geomType`; `DrawFrame` calls
+  `geometryQ2->SubmitDynamic(frameIndex)`,
+  `vertexBufferQ2->SetActiveFrame(frameIndex)`, then
+  `asManagerQ2->SubmitDynamic(cmd, frameIndex)`. The latter updates the
+  CPU-side `InstanceBuffer`, so `uniformQ2->Upload` follows it before the first
+  `GetDescSet()` consumer of the frame (`SkyBufferResolveQ2`).
+- **Explicitly deferred** (out of scope for this stage): dynamic sky, sprites,
+  particles, and beams are not uploaded to the Q2 chain at all (no texel buffers were
+  added; the effects TLAS remains the pre-existing never-hit placeholder
+  instance built once in `ASManagerQ2::SubmitStatic`). Dynamic emissive
+  brush/model lights (Q2RTX `instance_model_lights`) are not implemented —
+  moving light-emitting brushes/models render as solid geometry only, with no
+  light contribution beyond what static polygon lights already provide.
 
 #### G7 — indirect lighting
 

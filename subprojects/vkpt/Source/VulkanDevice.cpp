@@ -108,6 +108,11 @@ VkCommandBuffer VulkanDevice::BeginFrame(const RgStartFrameInfo &startInfo)
     // Q2RTX light data is rebuilt from scratch every frame (PORTING.md G6c).
     lightManagerQ2->PrepareForFrame();
 
+    // Stage G1b: start this frame's dynamic aggregate collection. Must run
+    // before any UploadGeometry call this frame (r_alias.c / r_world.c /
+    // r_brush.c dynamic uploads feed AddDynamicGeometry).
+    geometryQ2->BeginDynamicUpload();
+
     return cmd;
 }
 
@@ -1149,9 +1154,8 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
         uniformQ2->SetDynLights(lightManagerQ2->GetDynLightData(),
                                 lightManagerQ2->GetDynLightCount());
 
-        // Q2RTX-convention UBO and framebuffers, filled alongside the legacy
-        // ones and consumed by the Q2RTX chain below (PORTING.md, S2b/G4).
-        uniformQ2->Upload(cmd, frameIndex, uniform->GetData());
+        // Q2RTX framebuffers, filled alongside the legacy ones and consumed
+        // by the Q2RTX chain below (PORTING.md, S2b/G4).
         framebuffersQ2->Create(renderResolution.Width(), renderResolution.Height(), 1);
         framebuffersQ2->PrepareForFrame(frameIndex,
                                         textureManager->GetDescSet(frameIndex),
@@ -1164,6 +1168,22 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
         {
             framebuffersQ2->TransitionImagesToGeneral(cmd);
         }
+
+        // Stage G1b: finalize this frame's dynamic aggregate geometry (built
+        // from AddDynamicGeometry calls during this frame's UploadGeometry
+        // calls, which run before DrawFrame) and rebuild the ring-buffered
+        // dynamic BLAS / combined geometry TLAS / descriptor set 0 for this
+        // frame index. Must run before anything below binds
+        // vertexBufferQ2->GetDescSet() or asManagerQ2->GetDescSet()
+        // (SkyBufferResolveQ2 is the first consumer this frame).
+        geometryQ2->SubmitDynamic(frameIndex);
+        vertexBufferQ2->SetActiveFrame(frameIndex);
+        asManagerQ2->SubmitDynamic(cmd, frameIndex);
+
+        // SubmitDynamic updates the CPU-side TLAS primitive offsets for this
+        // frame's visibility ranges, so the Q2 uniform/instance upload must
+        // happen after it and before the first Q2 dispatch.
+        uniformQ2->Upload(cmd, frameIndex, uniform->GetData());
 
         // Q2RTX frame (PORTING.md, G4): sky resolve, primary rays into the
         // G-buffer, ASVGF denoise (gradient -> temporal -> LF -> a-trous),
@@ -1329,9 +1349,19 @@ void VulkanDevice::UploadGeometry(const RgGeometryUploadInfo *uploadInfo)
 
     scene->Upload(currentFrameState.GetFrameIndex(), *uploadInfo);
 
-    // Parallel Q2RTX world geometry (stage G1): convert the same CPU data
-    // into the Q2RTX VboPrimitive format. No effect on rendering yet.
-    geometryQ2->AddStaticGeometry(*uploadInfo);
+    // Parallel Q2RTX geometry conversion (stage G1 static world, G1b dynamic
+    // aggregate): convert the same CPU data into the Q2RTX VboPrimitive
+    // format. Dynamic geometry (pickups, monsters, world/view weapons,
+    // moving brushes) is collected per-frame; static/static-movable geometry
+    // goes into the persistent world buffer.
+    if (uploadInfo->geomType == RG_GEOMETRY_TYPE_DYNAMIC)
+    {
+        geometryQ2->AddDynamicGeometry(*uploadInfo);
+    }
+    else
+    {
+        geometryQ2->AddStaticGeometry(*uploadInfo);
+    }
 }
 
 void VulkanDevice::UpdateGeometryTransform(const RgUpdateTransformInfo *updateInfo)

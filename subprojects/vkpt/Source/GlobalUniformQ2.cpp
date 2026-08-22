@@ -56,6 +56,13 @@ void FillUniformBuffer(QVKUniformBuffer_t &ubo, const ShGlobalUniform &src,
     // which is why the legacy renderer is correct with these very matrices.
     ubo.pt_aperture = 0.0f;
 
+    // Q2RTX initializes this to -1 (main.c:3723/4357) and only sets it to the
+    // "look at" cluster under PVS feedback. The memset above leaves it 0, which
+    // makes primary_rays.rgen's PVS debug visualization fire for every
+    // triangle whose cluster is >= 0: alias models resolve to cluster 0 ("no
+    // valid world cluster", vkpt.h:360) and render as a red checkerboard.
+    ubo.cluster_debug_index = -1;
+
     // Per-frame data, mirroring what Q2RTX main.c fills.
     ubo.current_frame_idx = static_cast<int>(src.frameId);
     ubo.width             = static_cast<int>(src.renderWidth);

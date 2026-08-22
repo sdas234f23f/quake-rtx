@@ -529,7 +529,8 @@ static void RT_LerpPosition (float *dst, const float *src1, const float *src2, f
 }
 
 static const RgVertex *RT_GetPoseVertices (
-	const qmodel_t *m, const aliashdr_t *hdr, int pose1, int pose2, float blend, /* const */ vec3_t shadevector, /* const */ vec3_t lightcolor)
+	const qmodel_t *m, const aliashdr_t *hdr, int pose1, int pose2, float blend, /* const */ vec3_t shadevector, /* const */ vec3_t lightcolor,
+	int cluster)
 {
 	const RgVertex *v_pose1 = RT_GetModelVerticesForPose (m, hdr, pose1);
 	const RgVertex *v_pose2 = RT_GetModelVerticesForPose (m, hdr, pose2);
@@ -537,7 +538,7 @@ static const RgVertex *RT_GetPoseVertices (
 	// we don't care about per-vertex colors with RT
 	const qboolean need_vertex_lighting = CVAR_TO_BOOL (rt_classic_render);
 
-	if (blend < FLT_EPSILON && !need_vertex_lighting)
+	if (blend < FLT_EPSILON && !need_vertex_lighting && cluster < 0)
 	{
 		return v_pose1;
 	}
@@ -572,9 +573,41 @@ static const RgVertex *RT_GetPoseVertices (
 
 			dst->packedColor = RT_PackColorToUint32_FromFloat01 (vertcolor[0], vertcolor[1], vertcolor[2], 1.0f);
 		}
+
+		if (cluster >= 0)
+			dst->cluster = (uint32_t)cluster;
 	}
 
 	return tempstorage;
+}
+
+static int RT_GetAliasModelCluster (const qmodel_t *m, const lerpdata_t *lerpdata, qboolean isfirstperson)
+{
+	if (!cl.worldmodel || !cl.worldmodel->leafs)
+		return 0;
+
+	const float zoffsets[] = {
+		0.5f * (m->mins[2] + m->maxs[2]),
+		0.5f * m->maxs[2],
+		1.0f,
+		0.0f,
+	};
+
+	for (size_t i = 0; i < sizeof (zoffsets) / sizeof (zoffsets[0]); i++)
+	{
+		vec3_t point;
+		VectorCopy (lerpdata->origin, point);
+		point[2] += zoffsets[i];
+
+		mleaf_t *leaf = Mod_PointInLeaf (point, cl.worldmodel);
+		if (leaf && leaf->contents != CONTENTS_SOLID)
+			return (int)(leaf - cl.worldmodel->leafs);
+	}
+
+	if (isfirstperson && r_viewleaf && r_viewleaf->contents != CONTENTS_SOLID)
+		return (int)(r_viewleaf - cl.worldmodel->leafs);
+
+	return 0;
 }
 
 static RgTransform RT_GetAliasModelTransform (const aliashdr_t *paliashdr, const lerpdata_t *lerpdata, qboolean isfirstperson)
@@ -646,7 +679,7 @@ static void RT_GL_DrawAliasFrame (
 		RgRasterizedGeometryUploadInfo info = {
 			.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_DEFAULT,
 			.vertexCount = paliashdr->numverts_vbo,
-			.pVertices = RT_GetPoseVertices (e->model, paliashdr, lerpdata.pose1, lerpdata.pose2, blend, shadevector, lightcolor),
+			.pVertices = RT_GetPoseVertices (e->model, paliashdr, lerpdata.pose1, lerpdata.pose2, blend, shadevector, lightcolor, -1),
 			.indexCount = paliashdr->numindexes,
 			.pIndices = e->model->rtindices,
 			.transform = RT_GetAliasModelTransform (paliashdr, &lerpdata, isfirstperson),
@@ -669,6 +702,7 @@ static void RT_GL_DrawAliasFrame (
 	{
 		qboolean is_invis = (isfirstperson || isviewer) && (cl.items & IT_INVISIBILITY);
 		qboolean exact_normals = tx ? tx->rtcustomtextype == RT_CUSTOMTEXTUREINFO_TYPE_EXACT_NORMALS : 0;
+		const int cluster = RT_GetAliasModelCluster (e->model, &lerpdata, isfirstperson);
 
 		RgGeometryUploadInfo info = {
 			.uniqueID = RT_GetAliasModelUniqueId (entuniqueid),
@@ -684,7 +718,7 @@ static void RT_GL_DrawAliasFrame (
 				isviewer ? RG_GEOMETRY_VISIBILITY_TYPE_FIRST_PERSON_VIEWER :
 				RG_GEOMETRY_VISIBILITY_TYPE_WORLD_0,
 			.vertexCount = paliashdr->numverts_vbo,
-			.pVertices = RT_GetPoseVertices (e->model, paliashdr, lerpdata.pose1, lerpdata.pose2, blend, shadevector, lightcolor),
+			.pVertices = RT_GetPoseVertices (e->model, paliashdr, lerpdata.pose1, lerpdata.pose2, blend, shadevector, lightcolor, cluster),
 			.indexCount = paliashdr->numindexes,
 			.pIndices = e->model->rtindices,
 			.layerColors = {RT_COLOR_WHITE},

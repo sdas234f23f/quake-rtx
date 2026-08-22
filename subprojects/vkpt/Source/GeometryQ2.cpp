@@ -14,10 +14,32 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdarg>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 using namespace vkpt;
+
+// Temporary diagnostics: append a line to a file next to the executable so the
+// dynamic-geometry visibility bug can be traced without a console bridge.
+static void DbgDynamic(const char *fmt, ...)
+{
+    static FILE *file = nullptr;
+    if (file == nullptr)
+    {
+        file = fopen("q2rt_dynamic_dbg.txt", "a");
+    }
+    if (file == nullptr)
+    {
+        return;
+    }
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(file, fmt, args);
+    va_end(args);
+    fflush(file);
+}
 
 // Octahedral normal encoding, mirroring encode_normal() from utils.glsl so
 // the CPU-produced normals decode to the same values the shaders expect.
@@ -117,18 +139,26 @@ GeometryQ2::GeometryQ2(VkDevice _device,
   uploadFence(VK_NULL_HANDLE),
   worldPrimCount(0),
   hasWorldData(false),
-  materialCount(0)
+  materialCount(0),
+  uploadedMaterialCount(0),
+  dynamicPrimCount(0),
+  dynamicUploadCallCount(0)
 {
     VkFenceCreateInfo fenceInfo = {};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 
     VkResult r = vkCreateFence(device, &fenceInfo, nullptr, &uploadFence);
     VK_CHECKERROR(r);
+
 }
 
 GeometryQ2::~GeometryQ2()
 {
     worldBuffer.Destroy();
+    for (auto &buf : dynamicBuffers)
+    {
+        buf.Destroy();
+    }
     if (uploadFence != VK_NULL_HANDLE)
     {
         vkDestroyFence(device, uploadFence, nullptr);
@@ -146,6 +176,14 @@ void GeometryQ2::BeginStaticUpload()
     // SubmitStatic. Stale entries from the previous map are dropped.
     materialTable.clear();
     materialCount = 0;
+    uploadedMaterialCount = 0;
+
+    // Dynamic history is keyed by entity/surface uniqueID, which is only
+    // meaningful within one map (RT_GetAliasModelUniqueId etc. reuse the
+    // engine's per-entity index). Drop it so a new map doesn't inherit
+    // stale motion vectors from the previous one.
+    dynamicHistory.clear();
+    dynamicSeenIds.clear();
 }
 
 void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
@@ -153,16 +191,260 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
     if (uploadInfo.geomType != RG_GEOMETRY_TYPE_STATIC &&
         uploadInfo.geomType != RG_GEOMETRY_TYPE_STATIC_MOVABLE)
     {
-        // Dynamic / instanced geometry is handled in stage G1b.
+        // Dynamic / instanced geometry is handled by AddDynamicGeometry.
         return;
     }
 
+    const uint32_t triCount = AppendGeometry(uploadInfo, world, 0, nullptr, nullptr);
+    worldPrimCount += triCount;
+    hasWorldData = true;
+}
+
+void GeometryQ2::BeginDynamicUpload()
+{
+    for (WorldData &data : dynamicFrame)
+    {
+        data.primitives.clear();
+        data.positions.clear();
+    }
+    dynamicPrimCount = 0;
+    dynamicUploadCallCount = 0;
+    dynamicSeenIds.clear();
+}
+
+void GeometryQ2::AddDynamicGeometry(const RgGeometryUploadInfo &uploadInfo)
+{
+    if (uploadInfo.geomType != RG_GEOMETRY_TYPE_DYNAMIC)
+    {
+        return;
+    }
+
+    dynamicUploadCallCount++;
+
+    // Sky needs its own material and AS_FLAG_SKY visibility path. Keep it out
+    // of the solid dynamic stage until that path is ported; treating it as
+    // opaque world geometry would make it block primary and shadow rays.
+    if (uploadInfo.visibilityType == RG_GEOMETRY_VISIBILITY_TYPE_SKY)
+    {
+        return;
+    }
+
+    // Reliable signal instead of game-side gating: RT_GetSpriteModelUniqueId
+    // (Quake/gl_rmisc.c) tags every sprite uniqueID with kind 3 in the top 4
+    // bits (RT_GetAliasModelUniqueId = 2, RT_GetBrushSurfUniqueId = 1). This
+    // stage explicitly defers sprites/particles/beams, so drop sprite
+    // uploads here; particles and beams never call rgUploadGeometry.
+    constexpr uint64_t kUniqueIdKindMask = 0xFull << 60;
+    constexpr uint64_t kUniqueIdKindSprite = 3ull << 60;
+    if ((uploadInfo.uniqueID & kUniqueIdKindMask) == kUniqueIdKindSprite)
+    {
+        return;
+    }
+
+    DynamicGeometryCategory category = DynamicGeometryCategory::World;
+    uint32_t extraMaterialFlags = 0;
+    if (uploadInfo.visibilityType == RG_GEOMETRY_VISIBILITY_TYPE_FIRST_PERSON)
+    {
+        category = DynamicGeometryCategory::ViewerWeapon;
+        extraMaterialFlags |= MATERIAL_FLAG_WEAPON;
+    }
+    else if (uploadInfo.visibilityType ==
+             RG_GEOMETRY_VISIBILITY_TYPE_FIRST_PERSON_VIEWER)
+    {
+        category = DynamicGeometryCategory::ViewerModel;
+    }
+
+    const auto historyIt = dynamicHistory.find(uploadInfo.uniqueID);
+    const std::vector<float> *prevPositions =
+        (historyIt != dynamicHistory.end()) ? &historyIt->second : nullptr;
+
+    std::vector<float> newHistory;
+    WorldData &categoryData = dynamicFrame[static_cast<size_t>(category)];
+    const uint32_t triCount =
+        AppendGeometry(uploadInfo, categoryData, extraMaterialFlags,
+                       prevPositions, &newHistory);
+
+    dynamicPrimCount += triCount;
+    dynamicSeenIds.insert(uploadInfo.uniqueID);
+    dynamicHistory[uploadInfo.uniqueID] = std::move(newHistory);
+}
+
+void GeometryQ2::SubmitDynamic(uint32_t frameIndex)
+{
+    if (frameIndex >= MAX_FRAMES_IN_FLIGHT)
+    {
+        return;
+    }
+
+    // Drop history for uniqueIDs that stopped uploading this frame (freed
+    // pickups, dead monsters, closed doors that finished moving, etc.) so a
+    // future entity reusing the same uniqueID slot never inherits a stale
+    // delta or a topology mismatch.
+    for (auto it = dynamicHistory.begin(); it != dynamicHistory.end();)
+    {
+        if (dynamicSeenIds.find(it->first) == dynamicSeenIds.end())
+        {
+            it = dynamicHistory.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    // Existing entries may still be read by another in-flight frame. Material
+    // entries are immutable after insertion, so append only the new tail:
+    // older frames cannot reference those new indices.
+    if (materialCount > uploadedMaterialCount)
+    {
+        const uint32_t newCount = materialCount - uploadedMaterialCount;
+        vertexBufferQ2->SetQ2Materials(
+            materialTable.data() + uploadedMaterialCount * MATERIAL_UINTS,
+            uploadedMaterialCount, newCount);
+        uploadedMaterialCount = materialCount;
+    }
+
+    dynamicRanges[frameIndex] = {};
+
+    DbgDynamic("GeometryQ2::SubmitDynamic frame=%u calls=%u totalTris=%u "
+               "world=%u viewerWeapon=%u viewerModel=%u\n",
+               frameIndex, dynamicUploadCallCount, dynamicPrimCount,
+               static_cast<uint32_t>(
+                   dynamicFrame[static_cast<size_t>(DynamicGeometryCategory::World)].primitives.size() /
+                   sizeof(VboPrimitive)),
+               static_cast<uint32_t>(
+                   dynamicFrame[static_cast<size_t>(DynamicGeometryCategory::ViewerWeapon)].primitives.size() /
+                   sizeof(VboPrimitive)),
+               static_cast<uint32_t>(
+                   dynamicFrame[static_cast<size_t>(DynamicGeometryCategory::ViewerModel)].primitives.size() /
+                   sizeof(VboPrimitive)));
+
+    if (dynamicPrimCount == 0)
+    {
+        // Nothing dynamic this frame; leave the ring slot's previous buffer
+        // untouched; ASManagerQ2 skips the dynamic instance when the count
+        // is zero, so its stale contents are never read.
+        return;
+    }
+
+    VkDeviceSize primSize = 0;
+    VkDeviceSize posSize = 0;
+    for (const WorldData &data : dynamicFrame)
+    {
+        primSize += data.primitives.size();
+        posSize += data.positions.size();
+    }
+    const VkDeviceSize totalSize = primSize + posSize;
+
+    Buffer &buf = dynamicBuffers[frameIndex];
+    if (!buf.IsInitted() || buf.GetSize() < totalSize)
+    {
+        buf.Destroy();
+        buf.Init(allocator, totalSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                    VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                "Q2RTX dynamic geometry buffer");
+    }
+
+    // Host-visible coherent memory: the write below happens-before this
+    // frame's command buffer is submitted (SubmitDynamic runs synchronously
+    // on the CPU before VulkanDevice::DrawFrame records the ray tracing
+    // dispatches), so no explicit barrier is required for the device to see
+    // it, matching how ASManagerQ2 already treats its TLAS instance buffer.
+    uint8_t *mapped = static_cast<uint8_t *>(buf.Map());
+    VkDeviceSize primitiveByteOffset = 0;
+    VkDeviceSize positionByteOffset = primSize;
+
+    for (size_t i = 0; i < dynamicFrame.size(); i++)
+    {
+        const WorldData &data = dynamicFrame[i];
+        DynamicGeometryRange &range = dynamicRanges[frameIndex][i];
+
+        range.primitiveOffset =
+            static_cast<uint32_t>(primitiveByteOffset / sizeof(VboPrimitive));
+        range.primitiveCount =
+            static_cast<uint32_t>(data.primitives.size() / sizeof(VboPrimitive));
+        range.positionOffset = positionByteOffset;
+
+        if (!data.primitives.empty())
+        {
+            std::memcpy(mapped + primitiveByteOffset, data.primitives.data(),
+                        data.primitives.size());
+            primitiveByteOffset += data.primitives.size();
+        }
+        if (!data.positions.empty())
+        {
+            std::memcpy(mapped + positionByteOffset, data.positions.data(),
+                        data.positions.size());
+            positionByteOffset += data.positions.size();
+        }
+    }
+    buf.Unmap();
+
+    const VkDescriptorBufferInfo primInfo =
+    {
+        .buffer = buf.GetBuffer(),
+        .offset = 0,
+        .range = primSize,
+    };
+    vertexBufferQ2->SetDynamicBufferInfo(frameIndex, primInfo);
+}
+
+VkBuffer GeometryQ2::GetDynamicBuffer(uint32_t frameIndex) const
+{
+    if (frameIndex >= MAX_FRAMES_IN_FLIGHT || !dynamicBuffers[frameIndex].IsInitted())
+    {
+        return VK_NULL_HANDLE;
+    }
+    return dynamicBuffers[frameIndex].GetBuffer();
+}
+
+VkDeviceAddress GeometryQ2::GetDynamicBufferAddress(uint32_t frameIndex) const
+{
+    if (frameIndex >= MAX_FRAMES_IN_FLIGHT || !dynamicBuffers[frameIndex].IsInitted())
+    {
+        return 0;
+    }
+    return dynamicBuffers[frameIndex].GetAddress();
+}
+
+GeometryQ2::DynamicGeometryRange GeometryQ2::GetDynamicRange(
+    uint32_t frameIndex, DynamicGeometryCategory category) const
+{
+    const size_t categoryIndex = static_cast<size_t>(category);
+    if (frameIndex >= MAX_FRAMES_IN_FLIGHT ||
+        categoryIndex >= DYNAMIC_GEOMETRY_CATEGORY_COUNT)
+    {
+        return {};
+    }
+    return dynamicRanges[frameIndex][categoryIndex];
+}
+
+uint32_t GeometryQ2::AppendGeometry(const RgGeometryUploadInfo &uploadInfo,
+                                    WorldData &out,
+                                    uint32_t extraMaterialFlags,
+                                    const std::vector<float> *prevPositions,
+                                    std::vector<float> *positionHistoryOut)
+{
     const uint32_t triCount = uploadInfo.indexCount ? uploadInfo.indexCount / 3
                                                     : uploadInfo.vertexCount / 3;
 
-    worldPrimCount += triCount;
-    world.primitives.reserve(world.primitives.size() + triCount * sizeof(VboPrimitive));
-    world.positions.reserve(world.positions.size() + triCount * 9 * sizeof(float));
+    out.primitives.reserve(out.primitives.size() + triCount * sizeof(VboPrimitive));
+    out.positions.reserve(out.positions.size() + triCount * 9 * sizeof(float));
+
+    // Only use the caller-supplied previous-frame history if it matches this
+    // call's topology exactly (same triangle count); otherwise the geometry
+    // is new or changed shape, so every custom0/1/2 delta stays zero.
+    const bool havePrevPositions = prevPositions != nullptr &&
+                                   prevPositions->size() == static_cast<size_t>(triCount) * 9;
+
+    if (positionHistoryOut)
+    {
+        positionHistoryOut->clear();
+        positionHistoryOut->reserve(static_cast<size_t>(triCount) * 9);
+    }
 
     const float (&m)[3][4] = uploadInfo.transform.matrix;
 
@@ -283,6 +565,9 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
             materialId |= MATERIAL_FLAG_LIGHT;
         }
     }
+    // Stage G1b: MATERIAL_FLAG_WEAPON for first-person view weapon
+    // triangles, independent of which material index they resolved to.
+    materialId |= extraMaterialFlags;
 
     for (uint32_t t = 0; t < triCount; t++)
     {
@@ -422,6 +707,25 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
             prim.tangents[v] = tangentEnc[v];
         }
 
+        // Stage G1b: previous-current motion vector, packed like
+        // pack_motion_vector's packHalf4x16(prev - current, 0) in
+        // vertex_buffer.h. Zero (the default-initialized value) for
+        // static geometry (prevPositions is always null there) and for new
+        // or topology-changed dynamic geometry.
+        if (havePrevPositions)
+        {
+            uint32_t *const customOut[3] = {prim.custom0, prim.custom1, prim.custom2};
+            for (int v = 0; v < 3; v++)
+            {
+                const size_t base = (static_cast<size_t>(t) * 3 + v) * 3;
+                const float dx = (*prevPositions)[base + 0] - worldPos[v][0];
+                const float dy = (*prevPositions)[base + 1] - worldPos[v][1];
+                const float dz = (*prevPositions)[base + 2] - worldPos[v][2];
+                customOut[v][0] = PackHalf2x16(dx, dy);
+                customOut[v][1] = PackHalf2x16(dz, 0.0f);
+            }
+        }
+
         // uv / material / cluster / shell. The material id was resolved from
         // the per-upload Q2 material above (index + MATERIAL_KIND_REGULAR +
         // optional MATERIAL_FLAG_LIGHT). Alpha comes from the first layer.
@@ -429,10 +733,10 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
             materialId | (flipBitangent ? MATERIAL_FLAG_HANDEDNESS : 0);
         prim.uv0[0] = uploadInfo.pVertices[idx[0]].texCoord[0];
         prim.uv0[1] = uploadInfo.pVertices[idx[0]].texCoord[1];
-        prim.uv1[0] = uploadInfo.pVertices[idx[0]].texCoordLayer1[0];
-        prim.uv1[1] = uploadInfo.pVertices[idx[0]].texCoordLayer1[1];
-        prim.uv2[0] = uploadInfo.pVertices[idx[0]].texCoordLayer2[0];
-        prim.uv2[1] = uploadInfo.pVertices[idx[0]].texCoordLayer2[1];
+        prim.uv1[0] = uploadInfo.pVertices[idx[1]].texCoord[0];
+        prim.uv1[1] = uploadInfo.pVertices[idx[1]].texCoord[1];
+        prim.uv2[0] = uploadInfo.pVertices[idx[2]].texCoord[0];
+        prim.uv2[1] = uploadInfo.pVertices[idx[2]].texCoord[1];
 
         prim.cluster = static_cast<int32_t>(uploadInfo.pVertices[idx[0]].cluster);
 
@@ -441,24 +745,29 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
             rmeTexture != EMPTY_TEXTURE_INDEX ? 1.0f : uploadInfo.defaultEmission;
         prim.emissive_and_alpha = PackHalf2x16(primitiveEmissive, alpha);
 
-        const size_t primOffset = world.primitives.size();
-        world.primitives.resize(primOffset + sizeof(VboPrimitive));
-        std::memcpy(world.primitives.data() + primOffset, &prim, sizeof(VboPrimitive));
+        const size_t primOffset = out.primitives.size();
+        out.primitives.resize(primOffset + sizeof(VboPrimitive));
+        std::memcpy(out.primitives.data() + primOffset, &prim, sizeof(VboPrimitive));
 
-        // Append the three world-space positions for the BLAS source buffer.
+        // Append the three world-space positions for the BLAS source buffer
+        // (and, for the dynamic path, this frame's history for next frame's
+        // motion vectors - same layout, 9 floats per triangle).
         for (int v = 0; v < 3; v++)
         {
-            const RgVertex &vert = uploadInfo.pVertices[idx[v]];
-            float worldPos[3];
-            TransformPoint(vert.position, worldPos);
+            const size_t posOffset = out.positions.size();
+            out.positions.resize(posOffset + 3 * sizeof(float));
+            std::memcpy(out.positions.data() + posOffset, worldPos[v], sizeof(worldPos[v]));
 
-            const size_t posOffset = world.positions.size();
-            world.positions.resize(posOffset + 3 * sizeof(float));
-            std::memcpy(world.positions.data() + posOffset, worldPos, sizeof(worldPos));
+            if (positionHistoryOut)
+            {
+                positionHistoryOut->push_back(worldPos[v][0]);
+                positionHistoryOut->push_back(worldPos[v][1]);
+                positionHistoryOut->push_back(worldPos[v][2]);
+            }
         }
     }
 
-    hasWorldData = true;
+    return triCount;
 }
 
 void GeometryQ2::SubmitStatic()
@@ -467,7 +776,8 @@ void GeometryQ2::SubmitStatic()
     // uploads, even if there is no geometry (the table can outlive it).
     if (materialCount > 0)
     {
-        vertexBufferQ2->SetQ2Materials(materialTable.data(), materialCount);
+        vertexBufferQ2->SetQ2Materials(materialTable.data(), 0, materialCount);
+        uploadedMaterialCount = materialCount;
     }
 
     if (!hasWorldData || world.primitives.empty())

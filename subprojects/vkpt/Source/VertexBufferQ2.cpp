@@ -24,7 +24,8 @@ VertexBufferQ2::VertexBufferQ2(VkDevice _device, std::shared_ptr<MemoryAllocator
     device(_device),
     descPool(VK_NULL_HANDLE),
     descSetLayout(VK_NULL_HANDLE),
-    descSet(VK_NULL_HANDLE)
+    descSets{},
+    activeFrameIndex(0)
 {
     nullBuffer.Init(_allocator, 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, "Q2RTX null buffer");
@@ -142,7 +143,8 @@ void VertexBufferQ2::FillLightBuffer()
     lightBuffer.Unmap();
 }
 
-void VertexBufferQ2::SetQ2Materials(const uint32_t *entries, uint32_t count)
+void VertexBufferQ2::SetQ2Materials(const uint32_t *entries,
+                                    uint32_t firstEntry, uint32_t count)
 {
     if (!entries || count == 0)
     {
@@ -152,9 +154,13 @@ void VertexBufferQ2::SetQ2Materials(const uint32_t *entries, uint32_t count)
     // Entries are indexed from 2 in the geometry material ids (0 = empty,
     // 1 = default white); overwrite only that tail of the table.
     const uint32_t maxCount = MAX_PBR_MATERIALS - 2;
-    if (count > maxCount)
+    if (firstEntry >= maxCount)
     {
-        count = maxCount;
+        return;
+    }
+    if (count > maxCount - firstEntry)
+    {
+        count = maxCount - firstEntry;
     }
 
     void *mapped = lightBuffer.Map();
@@ -164,7 +170,8 @@ void VertexBufferQ2::SetQ2Materials(const uint32_t *entries, uint32_t count)
     }
 
     LightBuffer *lb = static_cast<LightBuffer *>(mapped);
-    std::memcpy(lb->material_table + 2 * MATERIAL_UINTS, entries,
+    std::memcpy(lb->material_table + (2 + firstEntry) * MATERIAL_UINTS,
+                entries,
                 static_cast<size_t>(count) * MATERIAL_UINTS * sizeof(uint32_t));
 
     lightBuffer.Unmap();
@@ -365,7 +372,8 @@ void VertexBufferQ2::CreateDescriptors()
     VK_CHECKERROR(r);
 
     // Pool sizes must cover the primitive array (binding 0) plus every other
-    // storage/uniform binding, like Q2RTX does.
+    // storage/uniform binding, like Q2RTX does. Sized x MAX_FRAMES_IN_FLIGHT
+    // since each ring slot gets its own descriptor set (stage G1b).
     const uint32_t storageCount =
         (VERTEX_BUFFER_FIRST_MODEL + Q2_MAX_MODELS) + // PRIMITIVE_BUFFER
         1 +                                           // POSITION_BUFFER
@@ -379,15 +387,15 @@ void VertexBufferQ2::CreateDescriptors()
 
     VkDescriptorPoolSize poolSizes[2] = {};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[0].descriptorCount = storageCount;
+    poolSizes[0].descriptorCount = storageCount * MAX_FRAMES_IN_FLIGHT;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[1].descriptorCount = 1; // SUN_COLOR_UBO
+    poolSizes[1].descriptorCount = 1 * MAX_FRAMES_IN_FLIGHT; // SUN_COLOR_UBO
 
     VkDescriptorPoolCreateInfo poolInfo = {};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = 2;
     poolInfo.pPoolSizes = poolSizes;
-    poolInfo.maxSets = 1;
+    poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT;
 
     r = vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool);
     VK_CHECKERROR(r);
@@ -395,10 +403,15 @@ void VertexBufferQ2::CreateDescriptors()
     VkDescriptorSetAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &descSetLayout;
+    VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
+    for (VkDescriptorSetLayout &layout : layouts)
+    {
+        layout = descSetLayout;
+    }
+    allocInfo.descriptorSetCount = MAX_FRAMES_IN_FLIGHT;
+    allocInfo.pSetLayouts = layouts;
 
-    r = vkAllocateDescriptorSets(device, &allocInfo, &descSet);
+    r = vkAllocateDescriptorSets(device, &allocInfo, descSets);
     VK_CHECKERROR(r);
 
     // Everything points at the 4-byte null buffer for now. For array
@@ -434,8 +447,14 @@ void VertexBufferQ2::CreateDescriptors()
 
     VkWriteDescriptorSet write = {};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = descSet;
     write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+
+    // Every ring slot starts out identical (all real buffers are shared
+    // across frames except the dynamic aggregate, which SetDynamicBufferInfo
+    // fills in per frame once GeometryQ2 has data).
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
+    {
+    write.dstSet = descSets[frame];
 
     // binding 0: the whole primitive array (world, instanced, then models).
     write.dstBinding = PRIMITIVE_BUFFER_BINDING_IDX;
@@ -517,11 +536,12 @@ void VertexBufferQ2::CreateDescriptors()
     write.descriptorCount = NUM_LIGHT_STATS_BUFFERS;
     write.pBufferInfo = lightStatsInfos.data();
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    }
 }
 
 VkDescriptorSet VertexBufferQ2::GetDescSet() const
 {
-    return descSet;
+    return descSets[activeFrameIndex];
 }
 
 VkDescriptorSetLayout VertexBufferQ2::GetDescSetLayout() const
@@ -532,21 +552,55 @@ VkDescriptorSetLayout VertexBufferQ2::GetDescSetLayout() const
 void VertexBufferQ2::SetWorldBufferInfo(const VkDescriptorBufferInfo &primInfo,
                                         const VkDescriptorBufferInfo &posInfo)
 {
+    // The static world buffer does not change per frame once loaded, so
+    // every ring slot's descriptor set gets the same write.
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
+    {
+        VkWriteDescriptorSet write = {};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descSets[frame];
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        write.descriptorCount = 1;
+
+        // binding 0 element VERTEX_BUFFER_WORLD (0) -> primitive array.
+        write.dstBinding = PRIMITIVE_BUFFER_BINDING_IDX;
+        write.dstArrayElement = VERTEX_BUFFER_WORLD;
+        write.pBufferInfo = &primInfo;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+
+        // binding 1 -> BLAS source positions.
+        write.dstBinding = POSITION_BUFFER_BINDING_IDX;
+        write.dstArrayElement = 0;
+        write.pBufferInfo = &posInfo;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    }
+}
+
+void VertexBufferQ2::SetActiveFrame(uint32_t frameIndex)
+{
+    if (frameIndex < MAX_FRAMES_IN_FLIGHT)
+    {
+        activeFrameIndex = frameIndex;
+    }
+}
+
+void VertexBufferQ2::SetDynamicBufferInfo(uint32_t frameIndex, const VkDescriptorBufferInfo &primInfo)
+{
+    if (frameIndex >= MAX_FRAMES_IN_FLIGHT)
+    {
+        return;
+    }
+
+    // Only this frame's ring slot is touched: descSets[frameIndex] is never
+    // bound by a command buffer for any other frameIndex, so this cannot
+    // race a still-executing frame N-1's reads of descSets[frameIndex-1].
     VkWriteDescriptorSet write = {};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = descSet;
+    write.dstSet = descSets[frameIndex];
     write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     write.descriptorCount = 1;
-
-    // binding 0 element VERTEX_BUFFER_WORLD (0) -> primitive array.
     write.dstBinding = PRIMITIVE_BUFFER_BINDING_IDX;
-    write.dstArrayElement = VERTEX_BUFFER_WORLD;
+    write.dstArrayElement = VERTEX_BUFFER_INSTANCED;
     write.pBufferInfo = &primInfo;
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-
-    // binding 1 -> BLAS source positions.
-    write.dstBinding = POSITION_BUFFER_BINDING_IDX;
-    write.dstArrayElement = 0;
-    write.pBufferInfo = &posInfo;
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 }

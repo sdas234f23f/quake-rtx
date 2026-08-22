@@ -26,21 +26,40 @@ public:
     VertexBufferQ2 &operator=(const VertexBufferQ2 &other) = delete;
     VertexBufferQ2 &operator=(VertexBufferQ2 &&other) noexcept = delete;
 
+    // Returns descSets[activeFrameIndex] (see SetActiveFrame / stage G1b):
+    // every binding except the VERTEX_BUFFER_INSTANCED array element is
+    // identical across ring slots, so existing no-arg callers (PathTracerQ2,
+    // SkyBufferResolveQ2, AsvgfTaaQ2, ToneMappingQ2, LightManagerQ2) need no
+    // changes.
     VkDescriptorSet GetDescSet() const;
     VkDescriptorSetLayout GetDescSetLayout() const;
 
     // Point the world bindings at real geometry: binding 0 element
     // VERTEX_BUFFER_WORLD gets the primitive array, binding 1
-    // (POSITION_BUFFER_BINDING_IDX) gets the BLAS source positions.
-    // Called by GeometryQ2 after the static level geometry is uploaded.
+    // (POSITION_BUFFER_BINDING_IDX) gets the BLAS source positions. Written
+    // identically into every ring slot's descriptor set (the world buffer
+    // does not change per frame). Called by GeometryQ2 after the static
+    // level geometry is uploaded.
     void SetWorldBufferInfo(const VkDescriptorBufferInfo &primInfo,
                             const VkDescriptorBufferInfo &posInfo);
 
-    // Stage G6: overwrite the material_table entries starting at material
-    // index 2 (0 = empty, 1 = default white). entries has count * 6 uints
-    // packed like Q2RTX material_table (get_material_info format). Called
-    // by GeometryQ2::SubmitStatic after the static level uploads.
-    void SetQ2Materials(const uint32_t *entries, uint32_t count);
+    // Stage G1b: select which ring slot GetDescSet() returns for the rest of
+    // this frame. Called once per frame (VulkanDevice::BeginFrame).
+    void SetActiveFrame(uint32_t frameIndex);
+
+    // Stage G1b: point binding 0 element VERTEX_BUFFER_INSTANCED of
+    // descSets[frameIndex] at this frame's dynamic aggregate buffer. Only
+    // that one ring slot's descriptor set is touched, so it never races a
+    // command buffer from a different frameIndex that may still be
+    // executing. Called by GeometryQ2::SubmitDynamic every frame that has
+    // dynamic geometry.
+    void SetDynamicBufferInfo(uint32_t frameIndex, const VkDescriptorBufferInfo &primInfo);
+
+    // Stage G6: overwrite count material_table entries beginning at
+    // material index 2 + firstEntry (0 = empty, 1 = default white). entries
+    // has count * 6 uints packed like Q2RTX material_table.
+    void SetQ2Materials(const uint32_t *entries, uint32_t firstEntry,
+                        uint32_t count);
 
     // Stage G6c: Q2RTX light data, filled by LightManagerQ2 every frame.
 
@@ -95,7 +114,13 @@ private:
 
     VkDescriptorPool      descPool;
     VkDescriptorSetLayout descSetLayout;
-    VkDescriptorSet       descSet;
+    // Stage G1b: one descriptor set per frame in flight so binding 0
+    // element VERTEX_BUFFER_INSTANCED can be repointed at that frame's
+    // dynamic aggregate buffer without racing a command buffer from a
+    // different ring slot that may still be executing (same pattern as
+    // FramebuffersQ2::descSets / activeFrameIndex).
+    VkDescriptorSet       descSets[MAX_FRAMES_IN_FLIGHT];
+    uint32_t              activeFrameIndex;
 };
 
 }

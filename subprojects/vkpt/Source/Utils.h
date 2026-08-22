@@ -94,6 +94,9 @@ namespace Utils
     void ASBuildMemoryBarrier(
         VkCommandBuffer cmd
     );
+    void ASBuildToBuildMemoryBarrier(
+        VkCommandBuffer cmd
+    );
 
     void WaitForFence(VkDevice device, VkFence fence);
     void ResetFence(VkDevice device, VkFence fence);

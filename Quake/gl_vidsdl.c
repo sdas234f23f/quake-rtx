@@ -4071,6 +4071,16 @@ void RT_GL_BeginRenderingTask (void *unused)
 		.requestShaderReload = request_shaders_reload,
 	};
 
+	if (!vulkan_globals_rt.instance)
+	{
+		static qboolean warned_null_instance = false;
+		if (!warned_null_instance)
+		{
+			warned_null_instance = true;
+			Con_Printf ("RT: rgStartFrame called with NULL instance handle\n");
+		}
+	}
+
 	RgResult r = rgStartFrame (vulkan_globals_rt.instance, &info);
 	RG_CHECK (r);
 

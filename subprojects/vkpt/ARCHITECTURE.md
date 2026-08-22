@@ -41,9 +41,12 @@ in between:
 | frame close | `GL_EndRendering` -> `RT_GL_EndRenderingTask` -> `rgDrawFrame` -> `VulkanDevice::DrawFrame` |
 
 `VulkanDevice::DrawFrame` records the Q2 chain into a single command buffer:
-sky buffer resolve, primary rays, direct lighting, ASVGF (gradient image,
-temporal, LF, a-trous), checkerboard interleave, TAA upscale, then `BridgeQ2`
-(bloom + tone mapping + blit into the legacy final image).
+per-frame dynamic geometry finalization (G1b — `GeometryQ2::SubmitDynamic`,
+`ASManagerQ2::SubmitDynamic`, see `PORTING.md` and section 5's "Dynamic
+geometry" invariants), sky buffer resolve, primary rays, direct lighting,
+ASVGF (gradient image, temporal, LF, a-trous), checkerboard interleave, TAA
+upscale, then `BridgeQ2` (bloom + tone mapping + blit into the legacy final
+image).
 
 **Key structural difference:** Q2RTX builds its scene data once per map; we
 rebuild most of it every frame from RG_* upload calls. See section 4.
@@ -55,8 +58,9 @@ rebuild most of it every frame from RG_* upload calls. See section 4.
 | Q2RTX | quake-rtx | Built where |
 |---|---|---|
 | `bsp_mesh_t` (whole BSP mesh) | *no equivalent* — replaced by per-frame uploads | — |
-| `VboPrimitive` (world primitive array) | same struct, vendored | `GeometryQ2::AddStaticGeometry` |
-| BLAS source positions | same layout, tail of the same buffer | `GeometryQ2::UploadToDevice` |
+| `VboPrimitive` (world primitive array) | same struct, vendored | `GeometryQ2::AppendGeometry` (shared by static + dynamic) |
+| BLAS source positions | same layout, tail of the same buffer | `GeometryQ2::UploadToDevice` (static), `GeometryQ2::SubmitDynamic` (dynamic, ring-buffered) |
+| *no equivalent (per-instance ModelInstance)* | dynamic aggregate `VboPrimitive`/position buffer at `VERTEX_BUFFER_INSTANCED`, split into contiguous world/view-weapon/viewer-model ranges and rebuilt every frame | `GeometryQ2::AddDynamicGeometry`/`SubmitDynamic` (G1b) |
 | `bsp_mesh->clusters` (per-primitive cluster) | `VboPrimitive.cluster`, fed from `RgVertex.cluster` | `r_brush.c` `rt_surfcluster[]` |
 | `light_poly_t` / `LightPolygon` | `RgPolygonalLightUploadInfo` -> `light_polys` | `r_world.c` `rt_wldlights_tri[]`, packed by `LightManagerQ2` |
 | `cluster_light_offsets` / `cluster_lights` | `light_list_offsets` / `light_list_lights` | `gl_rlight.c` `RT_ClusterLightListsUpload` (PVS), resolved by `LightManagerQ2` |
@@ -64,7 +68,7 @@ rebuild most of it every frame from RG_* upload calls. See section 4.
 | `buf_light_stats[3]` | *not implemented* — `pt_light_stats` forced to 0 | — |
 | `DynLightData` (sphere; spot pending) | `RgSphericalLightUploadInfo` -> best `MAX_LIGHT_SOURCES` by luminance / distance squared | `LightManagerQ2::Submit` -> `GlobalUniformQ2` |
 | `QVKUniformBuffer_t` | same struct, vendored | `GlobalUniformQ2::Upload` |
-| `InstanceBuffer` / `ModelInstance` | same structs, vendored | `ASManagerQ2` |
+| `InstanceBuffer` / `ModelInstance` | same structs, vendored; the static world and every active G1b category instance use `tlas_instance_model_indices == -1`, with per-range primitive offsets instead of per-entity `ModelInstance` entries | `ASManagerQ2` |
 | `MAX_RIMAGES` texture array | `GLOBAL_TEXTURES_TEX_ARR` — currently all white | `FramebuffersQ2` (G6b will point it at `TextureDescriptors`) |
 | `material_table` (PBR materials) | same layout; legacy RME index occupies the emissive slot during the dual-renderer bridge | `GeometryQ2` from `RgMaterial` + `.mat` factors |
 | framebuffer images (`LIST_IMAGES`) | same names/formats | `FramebuffersQ2` |
@@ -84,10 +88,12 @@ Identical to Q2RTX; the set indices come from the vendored `constants.h`.
 
 | Set | Q2RTX name | Owner here | Contents |
 |---|---|---|---|
-| 0 | `RAY_GEN_DESC_SET_IDX` | `ASManagerQ2` | TLAS + texel buffers |
+| 0 | `RAY_GEN_DESC_SET_IDX` | `ASManagerQ2` | TLAS + texel buffers; **G1b**: one descriptor set per `MAX_FRAMES_IN_FLIGHT` slot (`descSets[frameIndex]`), because the geometry TLAS entry (static world + active dynamic category instances) is rebuilt every frame — the effects TLAS entry and texel buffer placeholders are written into every ring slot once at load and never change |
 | 1 | `GLOBAL_UBO_DESC_SET_IDX` | `GlobalUniformQ2` | binding 0 UBO, binding 1 instance SSBO |
 | 2 | `GLOBAL_TEXTURES_DESC_SET_IDX` | `FramebuffersQ2` | per-frame sets: bindless `TextureManager` range, framebuffer images/textures, blue noise |
-| 3 | `VERTEX_BUFFER_DESC_SET_IDX` | `VertexBufferQ2` | primitives, positions, light buffer, light counts history, IQM, readback, tone mapping, sun color, light stats |
+| 3 | `VERTEX_BUFFER_DESC_SET_IDX` | `VertexBufferQ2` | primitives, positions, light buffer, light counts history, IQM, readback, tone mapping, sun color, light stats; **G1b**: one descriptor set per `MAX_FRAMES_IN_FLIGHT` slot, because binding 0 array element `VERTEX_BUFFER_INSTANCED` (1) points at that frame's dynamic aggregate buffer — every other binding is written into all ring slots identically |
+
+All four sets expose a no-arg `GetDescSet()` that returns `descSets[activeFrameIndex]` (or an unchanged single set, for `GlobalUniformQ2`); `activeFrameIndex` is set once per frame (`VertexBufferQ2::SetActiveFrame`, `ASManagerQ2::SubmitDynamic`) before anything binds it, so `PathTracerQ2` and every other consumer needed no signature changes for G1b.
 
 Compute passes that need only sets 0-1 bind a two-set layout; the ray tracing
 pipeline binds all four in the order above (`PathTracerQ2::CreatePipeline`).
@@ -179,3 +185,51 @@ failure mode, not a theoretical one — check them first when the image is wrong
 
 - Every framebuffer image stays in `VK_IMAGE_LAYOUT_GENERAL` for the whole
   frame, including the sampled descriptors. Q2RTX relies on this.
+
+**Dynamic geometry (G1b)**
+
+- Every dynamic-geometry `uniqueID`'s top 4 bits are a stable "kind" tag
+  (`Quake/gl_rmisc.c`: 1 = brush surface, 2 = alias model, 3 = sprite,
+  4 = custom object). `GeometryQ2::AddDynamicGeometry` relies on this to drop
+  kind-3 (sprite) uploads — the only game-side signal used to keep sprites
+  out of scope; particles and beams never call `rgUploadGeometry` at all.
+- Dynamic `RG_GEOMETRY_VISIBILITY_TYPE_SKY` uploads must stay out of the solid
+  ranges until the dedicated sky material and `AS_FLAG_SKY` path is ported.
+- Dynamic primitives and BLAS positions must stay in matching contiguous
+  world, view-weapon, and viewer-model ranges. Each non-empty range gets a
+  separate TLAS instance with an exclusive `AS_FLAG_OPAQUE`,
+  `AS_FLAG_VIEWER_WEAPON`, or `AS_FLAG_VIEWER_MODELS` mask; combining these
+  bits on one aggregate instance defeats Vulkan visibility filtering because
+  instance masks match on any shared bit.
+- Dynamic TLAS entries must keep `tlas_instance_model_indices[instance] == -1`
+  and set `tlas_instance_prim_offsets[instance]` to their range's primitive
+  offset. `get_model_index_and_prim_offset` in
+  `path_tracer_hit_shaders.h` then takes the world path while reading the
+  correct part of `VERTEX_BUFFER_INSTANCED`. Vertices are already world-space,
+  so every category instance's transform must stay identity.
+- `VboPrimitive.custom0/1/2` must hold `previous - current` world-space
+  position deltas packed with `packHalf4x16` semantics (two `PackHalf2x16`
+  calls per vertex), or the motion-vector-consuming passes (ASVGF temporal
+  reprojection) see stale/garbage motion for dynamic geometry. New or
+  topology-changed geometry (different triangle count than last frame for
+  the same `uniqueID`) must get a zero delta, not a delta against unrelated
+  vertices.
+- Anything mutable that `GetDescSet()` or a ray tracing dispatch reads this
+  frame — `GeometryQ2`'s dynamic buffer, `ASManagerQ2`'s dynamic BLAS/
+  combined TLAS/TLAS instance buffer/descriptor set/scratch allocator,
+  `VertexBufferQ2`'s descriptor set — must be rebuilt in ring slot `frameIndex`
+  *before*
+  `SkyBufferResolveQ2::Dispatch` (the first per-frame consumer) runs in
+  `VulkanDevice::DrawFrame`. The current frame's fence is waited before
+  `BeginFrame` returns, so recreating only that one ring slot is safe even
+  though frame N-1 may still be executing on the GPU.
+- Every BLAS build must be followed by an acceleration-structure build-stage
+  write-to-read dependency before TLAS construction. The build-to-ray barrier
+  after the TLAS does not establish this dependency. `GlobalUniformQ2::Upload`
+  must run after `ASManagerQ2::SubmitDynamic`, because the latter writes this
+  frame's category primitive offsets into the CPU-side `InstanceBuffer`.
+- `ASManagerQ2::HasTLAS()` must stay false until the *first*
+  `SubmitDynamic(cmd, frameIndex)` call for the active ring slot has run
+  (not merely after `SubmitStatic()` at level load) — the geometry TLAS
+  handle for a never-yet-built ring slot is `VK_NULL_HANDLE`, and dispatching
+  a ray trace against it is invalid.

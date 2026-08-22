@@ -83,8 +83,35 @@ RgResult rgCreateInstance(const RgInstanceCreateInfo *pInfo, RgInstance *pResult
             pInfo->pfnPrint(e.what(), pInfo->pUserPrintData);
         }
 
+        G_DEVICES.erase(rgInstance);
         return e.GetErrorCode(); 
-    } 
+    }
+    catch (std::exception &e)
+    {
+        // The C boundary above only catches RgException; a std::bad_alloc /
+        // length_error / out_of_range from a container inside the device
+        // constructor would otherwise escape as std::terminate() and a bare
+        // abort() with no message. Convert it to a clean error code instead,
+        // mirroring the Call<> overloads below. The operator[] above has
+        // already inserted a null entry for rgInstance, so erase it.
+        if (pInfo->pfnPrint != nullptr)
+        {
+            pInfo->pfnPrint(e.what(), pInfo->pUserPrintData);
+        }
+
+        G_DEVICES.erase(rgInstance);
+        return RG_GRAPHICS_API_ERROR;
+    }
+    catch (...)
+    {
+        if (pInfo->pfnPrint != nullptr)
+        {
+            pInfo->pfnPrint("Unknown exception during device initialization", pInfo->pUserPrintData);
+        }
+
+        G_DEVICES.erase(rgInstance);
+        return RG_GRAPHICS_API_ERROR;
+    }
     return RG_SUCCESS;
 }
 
