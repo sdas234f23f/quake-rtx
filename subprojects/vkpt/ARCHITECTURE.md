@@ -62,7 +62,7 @@ rebuild most of it every frame from RG_* upload calls. See section 4.
 | `cluster_light_offsets` / `cluster_lights` | `light_list_offsets` / `light_list_lights` | `gl_rlight.c` `RT_ClusterLightListsUpload` (PVS), resolved by `LightManagerQ2` |
 | `buf_light_counts_history[3]` | same, 3 buffers | `VertexBufferQ2::SetLightCounts` |
 | `buf_light_stats[3]` | *not implemented* — `pt_light_stats` forced to 0 | — |
-| `DynLightData` (sphere/spot) | `RgSphericalLightUploadInfo` | *not wired yet* |
+| `DynLightData` (sphere; spot pending) | `RgSphericalLightUploadInfo` -> best `MAX_LIGHT_SOURCES` by luminance / distance squared | `LightManagerQ2::Submit` -> `GlobalUniformQ2` |
 | `QVKUniformBuffer_t` | same struct, vendored | `GlobalUniformQ2::Upload` |
 | `InstanceBuffer` / `ModelInstance` | same structs, vendored | `ASManagerQ2` |
 | `MAX_RIMAGES` texture array | `GLOBAL_TEXTURES_TEX_ARR` — currently all white | `FramebuffersQ2` (G6b will point it at `TextureDescriptors`) |

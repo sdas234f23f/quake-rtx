@@ -9,6 +9,8 @@
 // Q2RTX builds this once per map from the BSP (bsp_mesh.c collect_light_polys
 // / collect_cluster_lights); we rebuild it per frame from the uploads because
 // the game already produces the lists that way, PVS included.
+// Spherical uploads are also gathered here and culled to the fixed-size
+// DynLightData UBO array using their contribution at the current camera.
 
 #pragma once
 
@@ -16,6 +18,7 @@
 #include "Common.h"
 #include "Containers.h"
 
+#include <cstddef>
 #include <memory>
 #include <vector>
 
@@ -42,13 +45,13 @@ public:
     // so the game's poly -> sphere merge is bypassed for this path.
     void AddPolygonalLight(const RgPolygonalLightUploadInfo &info);
 
-    // One point light (dlights, entity lights, world_custom_lights.txt).
-    // These go into the UBO's dyn_light_data array, which light_lists.h
-    // samples separately from the per-cluster polygon lists, so they need no
-    // cluster registration. Capped at MAX_LIGHT_SOURCES like Q2RTX.
+    // One point light candidate (dlights, entity lights,
+    // world_custom_lights.txt). Submit() selects the strongest candidates for
+    // the fixed-size Q2RTX UBO array.
     void AddSphericalLight(const RgSphericalLightUploadInfo &info);
 
-    // Packed DynLightData entries for the UBO, and how many are valid.
+    // Selected and packed DynLightData entries for the UBO, and how many are
+    // valid.
     const void *GetDynLightData() const;
     uint32_t GetDynLightCount() const;
 
@@ -58,10 +61,10 @@ public:
     void SetClusterLightLists(uint32_t numClusters, const uint32_t *offsets,
                               const uint64_t *lightUniqueIds, uint32_t totalCount);
 
-    // Resolve the unique IDs to light-poly indices and write everything into
-    // the LightBuffer. frameId selects the light-counts history slot the way
-    // the shader does.
-    void Submit(uint32_t frameId);
+    // Select point lights for the current view, resolve the unique IDs to
+    // light-poly indices, and write everything into the LightBuffer. frameId
+    // selects the light-counts history slot the way the shader does.
+    void Submit(uint32_t frameId, const float cameraPosition[3]);
 
     // Number of light polys written by the last Submit(); goes into
     // ubo.num_static_lights.
@@ -76,8 +79,13 @@ private:
 
     // DynLightData entries as raw bytes (the struct comes from global_ubo.h,
     // which only the .cpp needs to see).
+    std::vector<RgSphericalLightUploadInfo> sphericalLights;
+    std::vector<double> sphericalLightContributions;
+    std::vector<std::size_t> sphericalLightOrder;
     std::vector<uint8_t> dynLights;
     uint32_t dynLightCount;
+
+    void SelectSphericalLights(const float cameraPosition[3]);
 
     // Unique ID -> index into lightPolys.
     rgl::unordered_map<uint64_t, uint32_t> idToIndex;

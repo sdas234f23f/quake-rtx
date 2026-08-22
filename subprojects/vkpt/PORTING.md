@@ -129,11 +129,10 @@ Still open in this stage:
   But those materials take their colour from `texture_emissive`, so correct
   light polys need the texture port first. **G6b now comes before the rest
   of G6c.**
-- **The 32 point lights are chosen arbitrarily.** `MAX_LIGHT_SOURCES` is
-  saturated and entries are taken in upload order, with no visibility or
-  distance weighting, while `sample_dynamic_lights` picks among them
-  uniformly at random. Expect flicker and popping once things move. Select
-  the best 32 by contribution (intensity / distance squared) instead.
+- ~~The 32 point lights were chosen arbitrarily.~~ Fixed: all spherical
+  uploads are ranked against the current camera by Q2 luminance / distance
+  squared, and only the best `MAX_LIGHT_SOURCES` reach the UBO. Selected
+  entries retain upload order to keep stochastic sampler indices stable.
 - **`pt_light_stats` is still 0** and the light stats buffers do not exist.
 - **Spot lights are not mapped.** `RgSphericalLightUploadInfo.normal` marks a
   one-sided emitter but `DYNLIGHT_SPOT` needs real cone angles in

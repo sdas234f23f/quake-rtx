@@ -1137,10 +1137,10 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
     {
         FillUniform(uniform->GetData(), *drawInfo);
 
-        // G6c: resolve this frame's polygonal lights and per-cluster lists
-        // into the Q2 LightBuffer before the UBO is filled, so
-        // num_static_lights matches what the shaders will read.
-        lightManagerQ2->Submit(uniform->GetData()->frameId);
+        // G6c: select this view's point lights, then resolve polygonal lights
+        // and per-cluster lists before the Q2 UBO is filled.
+        lightManagerQ2->Submit(uniform->GetData()->frameId,
+                               uniform->GetData()->cameraPosition);
         uniformQ2->SetStaticLightCount(lightManagerQ2->GetLightPolyCount());
         uniformQ2->SetDynLights(lightManagerQ2->GetDynLightData(),
                                 lightManagerQ2->GetDynLightCount());
@@ -1591,4 +1591,3 @@ void VulkanDevice::DestroyCubemap(RgCubemap cubemap)
     cubemapManager->DestroyCubemap(currentFrameState.GetFrameIndex(), cubemap);
 }
 #pragma endregion 
-

@@ -9,12 +9,62 @@
 // DynLightData + MAX_LIGHT_SOURCES for the point-light path.
 #include "../q2rtx-shaders/global_ubo.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <numeric>
 
 using namespace vkpt;
 
 // Floats per LightPolygon entry in the light_polys array.
 static constexpr uint32_t LIGHT_POLY_FLOATS = LIGHT_POLY_VEC4S * 4;
+
+namespace
+{
+
+double GetSphericalLightContribution(const RgSphericalLightUploadInfo &light,
+                                     const float cameraPosition[3])
+{
+    const double intensity =
+        0.299 * std::max(static_cast<double>(light.color.data[0]), 0.0) +
+        0.587 * std::max(static_cast<double>(light.color.data[1]), 0.0) +
+        0.114 * std::max(static_cast<double>(light.color.data[2]), 0.0);
+
+    const double dx = static_cast<double>(light.position.data[0]) - cameraPosition[0];
+    const double dy = static_cast<double>(light.position.data[1]) - cameraPosition[1];
+    const double dz = static_cast<double>(light.position.data[2]) - cameraPosition[2];
+    const double distanceSquared = dx * dx + dy * dy + dz * dz;
+
+    if (!std::isfinite(intensity) || !std::isfinite(distanceSquared))
+    {
+        return 0.0;
+    }
+
+    return intensity / std::max(distanceSquared, 1.0);
+}
+
+void AppendSphericalLight(std::vector<uint8_t> &dst,
+                          const RgSphericalLightUploadInfo &info)
+{
+    DynLightData light = {};
+    light.center[0] = info.position.data[0];
+    light.center[1] = info.position.data[1];
+    light.center[2] = info.position.data[2];
+    light.radius = info.radius;
+    light.color[0] = info.color.data[0];
+    light.color[1] = info.color.data[1];
+    light.color[2] = info.color.data[2];
+
+    // RgSphericalLightUploadInfo.normal marks a one-sided emitter, but
+    // DYNLIGHT_SPOT needs real cone angles packed into spot_data.
+    light.type = DYNLIGHT_SPHERE;
+
+    const size_t offset = dst.size();
+    dst.resize(offset + sizeof(DynLightData));
+    std::memcpy(dst.data() + offset, &light, sizeof(DynLightData));
+}
+
+}
 
 LightManagerQ2::LightManagerQ2(std::shared_ptr<VertexBufferQ2> _vertexBufferQ2)
 :
@@ -25,6 +75,10 @@ LightManagerQ2::LightManagerQ2(std::shared_ptr<VertexBufferQ2> _vertexBufferQ2)
     uploadedTotalCount(0)
 {
     lightPolys.reserve(static_cast<size_t>(MAX_LIGHT_POLYS) * LIGHT_POLY_FLOATS);
+    sphericalLights.reserve(MAX_LIGHT_SOURCES);
+    sphericalLightContributions.reserve(MAX_LIGHT_SOURCES);
+    sphericalLightOrder.reserve(MAX_LIGHT_SOURCES);
+    dynLights.reserve(static_cast<size_t>(MAX_LIGHT_SOURCES) * sizeof(DynLightData));
 }
 
 LightManagerQ2::~LightManagerQ2() = default;
@@ -33,6 +87,9 @@ void LightManagerQ2::PrepareForFrame()
 {
     lightPolys.clear();
     lightPolyCount = 0;
+    sphericalLights.clear();
+    sphericalLightContributions.clear();
+    sphericalLightOrder.clear();
     dynLights.clear();
     dynLightCount = 0;
     idToIndex.clear();
@@ -80,30 +137,69 @@ void LightManagerQ2::AddPolygonalLight(const RgPolygonalLightUploadInfo &info)
 
 void LightManagerQ2::AddSphericalLight(const RgSphericalLightUploadInfo &info)
 {
-    if (dynLightCount >= MAX_LIGHT_SOURCES)
+    sphericalLights.push_back(info);
+}
+
+void LightManagerQ2::SelectSphericalLights(const float cameraPosition[3])
+{
+    dynLights.clear();
+    dynLightCount = 0;
+
+    const size_t selectedCount =
+        std::min(sphericalLights.size(), static_cast<size_t>(MAX_LIGHT_SOURCES));
+
+    if (sphericalLights.size() == selectedCount)
     {
-        return;
+        for (const RgSphericalLightUploadInfo &light : sphericalLights)
+        {
+            AppendSphericalLight(dynLights, light);
+        }
+    }
+    else
+    {
+        sphericalLightContributions.resize(sphericalLights.size());
+        sphericalLightOrder.resize(sphericalLights.size());
+        std::iota(sphericalLightOrder.begin(), sphericalLightOrder.end(),
+                  static_cast<size_t>(0));
+
+        for (size_t i = 0; i < sphericalLights.size(); i++)
+        {
+            sphericalLightContributions[i] =
+                GetSphericalLightContribution(sphericalLights[i], cameraPosition);
+        }
+
+        const auto moreImportant = [this](size_t a, size_t b)
+        {
+            if (sphericalLightContributions[a] != sphericalLightContributions[b])
+            {
+                return sphericalLightContributions[a] > sphericalLightContributions[b];
+            }
+
+            if (sphericalLights[a].uniqueID != sphericalLights[b].uniqueID)
+            {
+                return sphericalLights[a].uniqueID < sphericalLights[b].uniqueID;
+            }
+
+            return a < b;
+        };
+
+        std::partial_sort(sphericalLightOrder.begin(),
+                          sphericalLightOrder.begin() + selectedCount,
+                          sphericalLightOrder.end(),
+                          moreImportant);
+        sphericalLightOrder.resize(selectedCount);
+
+        // Upload order is stable across frames. Keep it for the selected set
+        // so stochastic light indices do not churn whenever two scores swap.
+        std::sort(sphericalLightOrder.begin(), sphericalLightOrder.end());
+
+        for (size_t index : sphericalLightOrder)
+        {
+            AppendSphericalLight(dynLights, sphericalLights[index]);
+        }
     }
 
-    DynLightData light = {};
-    light.center[0] = info.position.data[0];
-    light.center[1] = info.position.data[1];
-    light.center[2] = info.position.data[2];
-    light.radius = info.radius;
-    light.color[0] = info.color.data[0];
-    light.color[1] = info.color.data[1];
-    light.color[2] = info.color.data[2];
-
-    // Always a sphere for now. RgSphericalLightUploadInfo.normal marks a
-    // one-sided emitter, but DYNLIGHT_SPOT needs real cone angles packed into
-    // spot_data and we have none to give - occlusion is handled by the shadow
-    // ray either way, so a full sphere is the honest mapping.
-    light.type = DYNLIGHT_SPHERE;
-
-    const size_t offset = dynLights.size();
-    dynLights.resize(offset + sizeof(DynLightData));
-    std::memcpy(dynLights.data() + offset, &light, sizeof(DynLightData));
-    dynLightCount++;
+    dynLightCount = static_cast<uint32_t>(selectedCount);
 }
 
 const void *LightManagerQ2::GetDynLightData() const
@@ -133,8 +229,9 @@ void LightManagerQ2::SetClusterLightLists(uint32_t numClusters, const uint32_t *
     uploadedLightIds.assign(lightUniqueIds, lightUniqueIds + totalCount);
 }
 
-void LightManagerQ2::Submit(uint32_t frameId)
+void LightManagerQ2::Submit(uint32_t frameId, const float cameraPosition[3])
 {
+    SelectSphericalLights(cameraPosition);
     vertexBufferQ2->SetLightPolys(lightPolys.data(), lightPolyCount);
 
     if (uploadedClusterCount == 0 || lightPolyCount == 0)
