@@ -935,13 +935,22 @@ sample_emissive_texture(uint material_id, MaterialInfo minfo, vec2 tex_coord, ve
 {
 	if (minfo.emissive_texture != 0)
     {
-        vec4 image3;
+        vec4 packed_rme;
 	    if (mip_level >= 0)
-	        image3 = global_textureLod(minfo.emissive_texture, tex_coord, mip_level);
+	        packed_rme = global_textureLod(minfo.emissive_texture, tex_coord, mip_level);
 	    else
-	        image3 = global_textureGrad(minfo.emissive_texture, tex_coord, tex_coord_x, tex_coord_y);
+	        packed_rme = global_textureGrad(minfo.emissive_texture, tex_coord, tex_coord_x, tex_coord_y);
 
-    	vec3 corrected = correct_emissive(material_id, image3.rgb);
+        vec3 tint = vec3(1);
+        if (minfo.base_texture != 0)
+        {
+            if (mip_level >= 0)
+                tint = global_textureLod(minfo.base_texture, tex_coord, mip_level).rgb;
+            else
+                tint = global_textureGrad(minfo.base_texture, tex_coord, tex_coord_x, tex_coord_y).rgb;
+        }
+
+		vec3 corrected = correct_emissive(material_id, tint * packed_rme.b);
 
 	    return corrected * minfo.emissive_factor;
 	}
@@ -1038,6 +1047,27 @@ get_material(
 	metallic = 0;
     roughness = 1;
 
+    vec4 packed_rme = vec4(1, 0, 0, 1);
+    if (minfo.emissive_texture != 0)
+    {
+        if (mip_level >= 0)
+            packed_rme = global_textureLod(minfo.emissive_texture, tex_coord, mip_level);
+        else
+            packed_rme = global_textureGrad(minfo.emissive_texture, tex_coord, tex_coord_x, tex_coord_y);
+
+        metallic = clamp(packed_rme.g * minfo.metalness_factor, 0, 1);
+        roughness = minfo.roughness_override >= 0
+                        ? max(packed_rme.r, minfo.roughness_override)
+                        : packed_rme.r;
+        roughness = clamp(roughness, 0, 1);
+    }
+    else
+    {
+        metallic = clamp(minfo.metalness_factor, 0, 1);
+        if (minfo.roughness_override >= 0)
+            roughness = minfo.roughness_override;
+    }
+
     if (minfo.normals_texture != 0)
     {
         vec4 image2;
@@ -1066,15 +1096,6 @@ get_material(
 			normal = normalize(mix(geo_normal, normal, bump_scale));
 		}
 
-        metallic = clamp(image2.a * minfo.metalness_factor, 0, 1);
-        
-        if(minfo.roughness_override >= 0)
-        	roughness = max(image1.a, minfo.roughness_override);
-        else
-        	roughness = image1.a;
-
-        roughness = clamp(roughness, 0, 1);
-
         float effective_mip = mip_level;
 
     	if (effective_mip < 0)
@@ -1093,16 +1114,6 @@ get_material(
             roughness = AdjustRoughnessToksvig(roughness, normalMapLen, effective_mip);
         }
     }
-	else
-	{
-		// G6 port: Q2RTX assumes every surface has a normals texture and
-		// applies metalness/roughness only in the branch above. Before the
-		// texture port (G6b) all texture indices are 0, so take the factors
-		// from the material table directly instead.
-		metallic = clamp(minfo.metalness_factor, 0, 1);
-		if (minfo.roughness_override >= 0)
-			roughness = minfo.roughness_override;
-	}
 
     if(global_ubo.pt_roughness_override >= 0) roughness = global_ubo.pt_roughness_override;
     if(global_ubo.pt_metallic_override >= 0) metallic = global_ubo.pt_metallic_override;

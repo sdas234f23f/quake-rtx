@@ -21,6 +21,7 @@ namespace vkpt
 {
 
 class CommandBufferManager;
+class TextureManager;
 class VertexBufferQ2;
 
 class GeometryQ2
@@ -29,6 +30,7 @@ public:
     GeometryQ2(VkDevice device,
                std::shared_ptr<MemoryAllocator> allocator,
                std::shared_ptr<CommandBufferManager> cmdManager,
+               std::shared_ptr<TextureManager> textureManager,
                std::shared_ptr<VertexBufferQ2> vertexBufferQ2);
     ~GeometryQ2();
 
@@ -67,6 +69,7 @@ private:
     VkDevice device;
     std::shared_ptr<MemoryAllocator> allocator;
     std::shared_ptr<CommandBufferManager> cmdManager;
+    std::shared_ptr<TextureManager> textureManager;
     std::shared_ptr<VertexBufferQ2> vertexBufferQ2;
 
     WorldData world;

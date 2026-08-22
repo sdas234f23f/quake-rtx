@@ -214,7 +214,8 @@ void ASManagerQ2::BuildTLAS(VkCommandBuffer cmd)
 {
     const VkDeviceAddress blasAddress = blas.GetASAddress();
 
-    // Geometry TLAS instance: the whole world, opaque, SBT offset for opaque.
+    // Route the world through the masked hit group. Materials without a mask
+    // accept immediately, while alpha-tested textures can discard cutouts.
     QvkGeometryInstance *instances = static_cast<QvkGeometryInstance *>(instanceBuffer.Map());
     if (!instances)
     {
@@ -225,13 +226,12 @@ void ASManagerQ2::BuildTLAS(VkCommandBuffer cmd)
     memcpy(geomInst.transform, IDENTITY_12, sizeof(IDENTITY_12));
     geomInst.instance_id = VERTEX_BUFFER_WORLD; // == 0, the world primitive buffer
     geomInst.mask = AS_FLAG_OPAQUE;
-    geomInst.instance_offset = SBTO_OPAQUE;
+    geomInst.instance_offset = SBTO_MASKED;
     // Q2RTX keeps the world double-sided: primary rays flip the surface
     // normal in the shader when a triangle is hit from behind, so the world
     // instance disables face culling (same flags Q2RTX sets for the world
     // BLAS in its own TLAS fill).
-    geomInst.flags = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR |
-                     VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+    geomInst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
     geomInst.acceleration_structure = blasAddress;
 
     // Effects TLAS slot: same BLAS, but zero mask so rays never hit it.

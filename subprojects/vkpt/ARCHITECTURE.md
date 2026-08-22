@@ -66,7 +66,7 @@ rebuild most of it every frame from RG_* upload calls. See section 4.
 | `QVKUniformBuffer_t` | same struct, vendored | `GlobalUniformQ2::Upload` |
 | `InstanceBuffer` / `ModelInstance` | same structs, vendored | `ASManagerQ2` |
 | `MAX_RIMAGES` texture array | `GLOBAL_TEXTURES_TEX_ARR` — currently all white | `FramebuffersQ2` (G6b will point it at `TextureDescriptors`) |
-| `material_table` (PBR materials) | same layout | `GeometryQ2` from the `.mat` system |
+| `material_table` (PBR materials) | same layout; legacy RME index occupies the emissive slot during the dual-renderer bridge | `GeometryQ2` from `RgMaterial` + `.mat` factors |
 | framebuffer images (`LIST_IMAGES`) | same names/formats | `FramebuffersQ2` |
 
 Q2RTX ping-pongs the `_A`/`_B` images by swapping descriptor sets each frame

@@ -1,6 +1,8 @@
 #include "GeometryQ2.h"
 
 #include "CommandBufferManager.h"
+#include "Generated/ShaderCommonC.h"
+#include "TextureManager.h"
 #include "Utils.h"
 #include "VertexBufferQ2.h"
 
@@ -105,10 +107,12 @@ static uint32_t PackHalf2x16(float a, float b)
 GeometryQ2::GeometryQ2(VkDevice _device,
                        std::shared_ptr<MemoryAllocator> _allocator,
                        std::shared_ptr<CommandBufferManager> _cmdManager,
+                       std::shared_ptr<TextureManager> _textureManager,
                        std::shared_ptr<VertexBufferQ2> _vertexBufferQ2)
 : device(_device),
   allocator(std::move(_allocator)),
   cmdManager(std::move(_cmdManager)),
+  textureManager(std::move(_textureManager)),
   vertexBufferQ2(std::move(_vertexBufferQ2)),
   uploadFence(VK_NULL_HANDLE),
   worldPrimCount(0),
@@ -193,31 +197,46 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
     // rt_brush_rough / rt_brush_metal. The entry format is the 6-uint
     // layout of get_material_info in vertex_buffer.h; entries are
     // de-duplicated. Index 0 is empty, index 1 is the startup default.
-    // Base/normal/emissive/mask texture indices stay 0 (white) until the
-    // texture port (G6b). Kinds are forced to REGULAR for now - WATER/
-    // GLASS/SKY paths need their textures and special handling.
+    // The legacy material owns albedo, packed roughness/metal/emission (RME),
+    // and normal textures. The Q2 shader adapter interprets the emissive slot
+    // as packed RME while both renderers share this material system.
     const RgQ2Material *qm = uploadInfo.pQ2Material;
+    const MaterialTextures textures =
+        textureManager->GetMaterialTextures(uploadInfo.geomMaterial.layerMaterials[0]);
+    const uint32_t baseTexture = textures.indices[MATERIAL_ALBEDO_ALPHA_INDEX];
+    const uint32_t rmeTexture =
+        textures.indices[MATERIAL_ROUGHNESS_METALLIC_EMISSION_INDEX];
+    const uint32_t normalTexture = textures.indices[MATERIAL_NORMAL_INDEX];
+    const bool hasBaseTexture = baseTexture != EMPTY_TEXTURE_INDEX;
+    const bool hasRmeTexture = rmeTexture != EMPTY_TEXTURE_INDEX;
 
     uint32_t entry[MATERIAL_UINTS];
-    entry[0] = 0; // base_texture | normals_texture << 16
-    entry[1] = 0; // emissive_texture | mask_texture << 16
+    entry[0] = baseTexture | (normalTexture << 16);
+    entry[1] = rmeTexture | (baseTexture << 16);
     entry[4] = 1; // num_frames | next_frame << 16
 
-    const float roughness = (qm && qm->roughness_override > 0.0f)
-                                ? qm->roughness_override
-                                : uploadInfo.defaultRoughness;
-    const float metalness = qm ? qm->metalness_factor : uploadInfo.defaultMetallicity;
-    // Until the emissive texture port (G6b) the emissive factor is only
-    // meaningful for light surfaces: a plain surface with a _luma
-    // texture carries emissive_factor 1.0 from the game side, and
-    // without the emissive texture it would glow white completely.
-    const float emissive = (qm && qm->is_light) ? qm->emissive_factor : 0.0f;
+    // TexMgr_ApplyMaterialFromMat already bakes the .mat base, bump,
+    // roughness, metalness, and emissive factors into these textures.
+    const float roughness = hasRmeTexture
+                                ? -1.0f
+                                : (qm && qm->roughness_override > 0.0f)
+                                      ? qm->roughness_override
+                                      : uploadInfo.defaultRoughness;
+    const float metalness = hasRmeTexture
+                                ? 1.0f
+                                : qm ? qm->metalness_factor : uploadInfo.defaultMetallicity;
+    const float emissive = rmeTexture != EMPTY_TEXTURE_INDEX
+                               ? 1.0f
+                               : (qm && qm->is_light) ? qm->emissive_factor : 0.0f;
     const float specular = (qm && qm->specular_factor > 0.0f) ? qm->specular_factor : 0.5f;
-    const float baseFactor = (qm && qm->base_factor > 0.0f) ? qm->base_factor : 1.0f;
-    const float bump = qm ? qm->bump_scale : 0.0f;
+    const float baseFactor =
+        hasBaseTexture ? 1.0f
+                       : (qm && qm->base_factor > 0.0f) ? qm->base_factor : 1.0f;
+    const float bump = normalTexture != EMPTY_TEXTURE_INDEX ? 1.0f
+                                                            : qm ? qm->bump_scale : 0.0f;
 
     entry[2] = PackHalf2x16(std::clamp(bump, 0.0f, 1.0f),
-                            std::clamp(roughness, 0.0f, 1.0f));
+                            std::clamp(roughness, -1.0f, 1.0f));
     entry[3] = PackHalf2x16(std::clamp(metalness, 0.0f, 1.0f),
                             std::clamp(emissive, 0.0f, 1.0f));
     entry[5] = PackHalf2x16(std::clamp(specular, 0.0f, 1.0f),
@@ -321,6 +340,75 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
             normalEnc = EncodeNormal(worldNormal[0], worldNormal[1], worldNormal[2]);
         }
 
+        uint32_t tangentEnc[3] = {};
+        bool flipBitangent = false;
+        {
+            const float *uv0 = uploadInfo.pVertices[idx[0]].texCoord;
+            const float *uv1 = uploadInfo.pVertices[idx[1]].texCoord;
+            const float *uv2 = uploadInfo.pVertices[idx[2]].texCoord;
+            const float du1 = uv1[0] - uv0[0];
+            const float dv1 = uv1[1] - uv0[1];
+            const float du2 = uv2[0] - uv0[0];
+            const float dv2 = uv2[1] - uv0[1];
+            const float determinant = du1 * dv2 - dv1 * du2;
+
+            if (std::abs(determinant) > 1.0e-8f)
+            {
+                const float invDet = 1.0f / determinant;
+                float tangent[3];
+                float bitangent[3];
+                for (int k = 0; k < 3; k++)
+                {
+                    const float edge1 = worldPos[1][k] - worldPos[0][k];
+                    const float edge2 = worldPos[2][k] - worldPos[0][k];
+                    tangent[k] = (edge1 * dv2 - edge2 * dv1) * invDet;
+                    bitangent[k] = (edge2 * du1 - edge1 * du2) * invDet;
+                }
+
+                const float length = std::sqrt(tangent[0] * tangent[0] +
+                                               tangent[1] * tangent[1] +
+                                               tangent[2] * tangent[2]);
+                if (length > 1.0e-6f)
+                {
+                    tangent[0] /= length;
+                    tangent[1] /= length;
+                    tangent[2] /= length;
+                    const uint32_t encoded =
+                        EncodeNormal(tangent[0], tangent[1], tangent[2]);
+                    tangentEnc[0] = tangentEnc[1] = tangentEnc[2] = encoded;
+
+                    const float edge1[3] =
+                    {
+                        worldPos[1][0] - worldPos[0][0],
+                        worldPos[1][1] - worldPos[0][1],
+                        worldPos[1][2] - worldPos[0][2],
+                    };
+                    const float edge2[3] =
+                    {
+                        worldPos[2][0] - worldPos[0][0],
+                        worldPos[2][1] - worldPos[0][1],
+                        worldPos[2][2] - worldPos[0][2],
+                    };
+                    const float faceNormal[3] =
+                    {
+                        edge1[1] * edge2[2] - edge1[2] * edge2[1],
+                        edge1[2] * edge2[0] - edge1[0] * edge2[2],
+                        edge1[0] * edge2[1] - edge1[1] * edge2[0],
+                    };
+                    const float crossNormalTangent[3] =
+                    {
+                        faceNormal[1] * tangent[2] - faceNormal[2] * tangent[1],
+                        faceNormal[2] * tangent[0] - faceNormal[0] * tangent[2],
+                        faceNormal[0] * tangent[1] - faceNormal[1] * tangent[0],
+                    };
+                    flipBitangent =
+                        crossNormalTangent[0] * bitangent[0] +
+                        crossNormalTangent[1] * bitangent[1] +
+                        crossNormalTangent[2] * bitangent[2] < 0.0f;
+                }
+            }
+        }
+
         for (int v = 0; v < 3; v++)
         {
             float *posOut = (v == 0) ? prim.pos0 : (v == 1) ? prim.pos1 : prim.pos2;
@@ -331,12 +419,14 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
             uint32_t *normalOut = (v == 0) ? &prim.normals[0]
                                            : (v == 1) ? &prim.normals[1] : &prim.normals[2];
             *normalOut = normalEnc;
+            prim.tangents[v] = tangentEnc[v];
         }
 
         // uv / material / cluster / shell. The material id was resolved from
         // the per-upload Q2 material above (index + MATERIAL_KIND_REGULAR +
         // optional MATERIAL_FLAG_LIGHT). Alpha comes from the first layer.
-        prim.material_id = materialId;
+        prim.material_id =
+            materialId | (flipBitangent ? MATERIAL_FLAG_HANDEDNESS : 0);
         prim.uv0[0] = uploadInfo.pVertices[idx[0]].texCoord[0];
         prim.uv0[1] = uploadInfo.pVertices[idx[0]].texCoord[1];
         prim.uv1[0] = uploadInfo.pVertices[idx[0]].texCoordLayer1[0];
@@ -347,8 +437,9 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
         prim.cluster = static_cast<int32_t>(uploadInfo.pVertices[idx[0]].cluster);
 
         const float alpha = uploadInfo.layerColors[0].data[3];
-        const float emissive = uploadInfo.defaultEmission;
-        prim.emissive_and_alpha = PackHalf2x16(emissive, alpha);
+        const float primitiveEmissive =
+            rmeTexture != EMPTY_TEXTURE_INDEX ? 1.0f : uploadInfo.defaultEmission;
+        prim.emissive_and_alpha = PackHalf2x16(primitiveEmissive, alpha);
 
         const size_t primOffset = world.primitives.size();
         world.primitives.resize(primOffset + sizeof(VboPrimitive));

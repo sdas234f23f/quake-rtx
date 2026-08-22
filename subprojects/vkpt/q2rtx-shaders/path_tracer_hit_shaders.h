@@ -78,7 +78,7 @@ bool pt_logic_masked(int primitiveID, int instanceID, int geometryIndex, uint in
 
 	vec4 mask_value = global_textureLod(minfo.mask_texture, tex_coord, /* mip_level = */ 0);
 
-	return mask_value.x >= 0.5;
+	return mask_value.a >= 0.5;
 }
 
 vec4 pt_logic_particle(int primitiveID, vec2 bary)

@@ -195,11 +195,14 @@ Point `GLOBAL_TEXTURES_TEX_ARR` at the image views the existing bindless
 `MATERIAL_KIND_REGULAR` and enable WATER / GLASS / LAVA kinds, and the emissive
 factor that currently has no texture to modulate.
 
-The descriptor half is complete: `FramebuffersQ2` owns one set per frame,
-copies the initialized runtime-sized range from `TextureManager` after its
-descriptor submission, and leaves the unused tail of Q2RTX's 8192-entry array
-on the white fallback. Material-table indices and the legacy RME-to-Q2 sampling
-adapter are the next increment.
+G6b is wired end to end. `FramebuffersQ2` owns one set per frame, copies the
+initialized runtime-sized range from `TextureManager` after its descriptor
+submission, and leaves the unused tail of Q2RTX's 8192-entry array on the white
+fallback. `GeometryQ2` resolves each `RgMaterial` handle to bindless
+albedo/RME/normal indices and generates tangents. The Q2 shader adapter reads
+roughness/metalness/emission from legacy RME and alpha tests from albedo alpha;
+this bridge is intentionally temporary while both renderers share the material
+system.
 
 #### G6d — per-frame UBO correctness
 

@@ -83,8 +83,6 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
     uniformQ2           = std::make_shared<GlobalUniformQ2>(device, memAllocator);
     vertexBufferQ2      = std::make_shared<VertexBufferQ2>(device, memAllocator);
     lightManagerQ2      = std::make_shared<LightManagerQ2>(vertexBufferQ2);
-    geometryQ2          = std::make_shared<GeometryQ2>(device, memAllocator, cmdManager, vertexBufferQ2);
-    asManagerQ2         = std::make_shared<ASManagerQ2>(device, physDevice, memAllocator, cmdManager, geometryQ2, uniformQ2);
 
     // Created after all the descriptor set owners so the pipeline layout
     // can reference them; shaderManager is created further below.
@@ -125,6 +123,11 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         userFileLoad,
         *info,
         libconfig);
+
+    geometryQ2          = std::make_shared<GeometryQ2>(
+        device, memAllocator, cmdManager, textureManager, vertexBufferQ2);
+    asManagerQ2         = std::make_shared<ASManagerQ2>(
+        device, physDevice, memAllocator, cmdManager, geometryQ2, uniformQ2);
 
     cubemapManager      = std::make_shared<CubemapManager>(
         device,
@@ -398,6 +401,25 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
 VulkanDevice::~VulkanDevice()
 {
     vkDeviceWaitIdle(device);
+
+    bridgeQ2.reset();
+    skyBufferResolveQ2.reset();
+    asvgfTaaQ2.reset();
+    toneMappingQ2.reset();
+    asvgfAtrousQ2.reset();
+    asvgfLfQ2.reset();
+    asvgfGradientImgQ2.reset();
+    asvgfTemporalQ2.reset();
+    compositingQ2.reset();
+    bloomQ2.reset();
+    shaderSwapQ2.reset();
+    pathTracerQ2.reset();
+    asManagerQ2.reset();
+    geometryQ2.reset();
+    lightManagerQ2.reset();
+    vertexBufferQ2.reset();
+    uniformQ2.reset();
+    framebuffersQ2.reset();
 
     physDevice.reset();
     queues.reset();
