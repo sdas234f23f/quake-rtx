@@ -24,6 +24,23 @@ See `ARCHITECTURE.md` for the structural map between the two engines: frame
 lifecycle, data-structure correspondence, the descriptor-set contract, and the
 invariants the Q2RTX shaders depend on.
 
+## Runtime assets (blue noise)
+
+The Q2RTX chain requires `blue_noise.pkz` (≈100 MB, 128 `HDR_RGBA_*.png` under
+`blue_noise/256_256/`) at startup. Without it the device aborts with
+`RG_ERROR_CANT_FIND_BLUE_NOISE` (a bare `abort()` under MSVC). It is a Q2RTX
+asset and is **not** checked into this repository; copy it once from the Q2RTX
+source tree:
+
+```
+Copy-Item C:\Users\f1am3d\repos\Q2RTX\baseq2\blue_noise.pkz .\id1\
+```
+
+`build_win.ps1` copies every `id1\*.pkz` into `<build>\id1\` (the mounted search
+path) at build time, so the file survives clean builds. The smaller
+`ovrd\BlueNoise_LDR_RGBA_128.ktx2` is a different (LDR) asset and does **not**
+satisfy this requirement.
+
 ## Why shaders cannot be swapped in isolation
 
 Every current shader was not only renamed but substantially adapted to the
