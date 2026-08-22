@@ -144,6 +144,10 @@ failure mode, not a theoretical one — check them first when the image is wrong
   which uploads the lights, needs an explicit `Task_AddDependency` on
   `draw_world_task`. All three were wrong at once, and the symptom was simply
   zero world lights.
+- Static `.mat is_light` surfaces use the average **linear RGB** captured when
+  `TexMgr_ApplyMaterialFromMat` synthesizes their textures. They append through
+  the same atomic `rt_wldlights_tri` list as `@POLY_LIGHT`; averaging sRGB bytes
+  directly would over-brighten the emitted radiance.
 - The `uniqueID` passed to `rgUploadPolygonalLight` must be the **same value**
   registered via `RT_ClusterLightAdd*`, or the list entry resolves to nothing.
 - The point registered for clustering must lie in a **non-solid leaf**. A

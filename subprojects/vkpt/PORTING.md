@@ -129,6 +129,10 @@ Still open in this stage:
   But those materials take their colour from `texture_emissive`, so correct
   light polys need the texture port first. **G6b now comes before the rest
   of G6c.**
+- `.mat is_light` static surfaces now join the existing polygonal-light path.
+  The material synthesis records average linear emissive RGB while source
+  pixels are available; `RT_FlushBatch` uses it to populate the atomic world
+  triangle list. Dynamic emissive brush/model surfaces remain part of G1b.
 - ~~The 32 point lights were chosen arbitrarily.~~ Fixed: all spherical
   uploads are ranked against the current camera by Q2 luminance / distance
   squared, and only the best `MAX_LIGHT_SOURCES` reach the UBO. Selected

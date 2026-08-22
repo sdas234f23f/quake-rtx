@@ -1486,6 +1486,10 @@ static void RT_FlushBatch (rt_cb_context_t *cbx, const rt_uploadsurf_state_t *s,
 
 	gltexture_t *diffuse_tex = r_lightmap_cheatsafe ? NULL : s->diffuse_tex;
 	gltexture_t *lightmap_tex = r_fullbright_cheatsafe ? NULL : s->lightmap_tex;
+	rt_material_t auto_mat;
+	rt_material_t *resolved_mat = diffuse_tex ? RT_MAT_Find (diffuse_tex->name) : NULL;
+	if (!resolved_mat && diffuse_tex && RT_MAT_AutoDetect (diffuse_tex->name, &auto_mat))
+		resolved_mat = &auto_mat;
 
 	// The classic lightmap (static baked light + dynamic dlight patches) is
 	// applied as a SHADE layer on top of the RT albedo. In the RT renderer the
@@ -1496,17 +1500,23 @@ static void RT_FlushBatch (rt_cb_context_t *cbx, const rt_uploadsurf_state_t *s,
 		lightmap_tex = NULL;
 	}
 
-	// Curated poly light textures (@POLY_LIGHT, e.g. *light*) become light
-	// sources; with RT_USE_SPHERE_INSTEAD_OF_POLY they are converted to sphere
-	// lights.
-	const qboolean is_poly_light = diffuse_tex && diffuse_tex->rtcustomtextype == RT_CUSTOMTEXTUREINFO_TYPE_POLY_LIGHT;
+	// Keep curated @POLY_LIGHT compatibility, and add static Q2RTX material
+	// lights from the emissive pixels captured while the material was built.
+	const qboolean is_custom_poly_light =
+		diffuse_tex && diffuse_tex->rtcustomtextype == RT_CUSTOMTEXTUREINFO_TYPE_POLY_LIGHT;
+	const qboolean is_material_poly_light =
+		is_static_geom && resolved_mat && resolved_mat->is_light &&
+		diffuse_tex && diffuse_tex->rtq2islight;
+	const qboolean is_poly_light = is_custom_poly_light || is_material_poly_light;
 
 	if (is_poly_light)
 	{
 		const RgTransform transf = RT_GetBrushModelMatrix (s->ent);
 
 		vec3_t color;
-		VectorCopy (diffuse_tex->rtlightcolor, color);
+		VectorCopy (is_custom_poly_light ? diffuse_tex->rtlightcolor
+		                                : diffuse_tex->rtq2emissivecolor,
+		            color);
 		VectorScale (color, CVAR_TO_FLOAT (rt_plight_intensity), color);
 		RT_FIXUP_LIGHT_INTENSITY (color, true);
 
@@ -1665,24 +1675,17 @@ static void RT_FlushBatch (rt_cb_context_t *cbx, const rt_uploadsurf_state_t *s,
 		// surface and pass it with the upload so the Q2 renderer can fill
 		// its material_table with the per-surface PBR factors.
 		ZEROED_STRUCT (RgQ2Material, q2material);
+		if (resolved_mat)
 		{
-			rt_material_t autoMat;
-			rt_material_t *mat = diffuse_tex ? RT_MAT_Find (diffuse_tex->name) : NULL;
-			if (!mat && diffuse_tex && RT_MAT_AutoDetect (diffuse_tex->name, &autoMat))
-				mat = &autoMat;
-
-			if (mat)
-			{
-				q2material.roughness_override = mat->roughness_override;
-				q2material.metalness_factor = mat->metalness_factor;
-				q2material.emissive_factor = mat->emissive_factor;
-				q2material.specular_factor = mat->specular_factor;
-				q2material.base_factor = mat->base_factor;
-				q2material.bump_scale = mat->bump_scale;
-				q2material.kind = mat->kind;
-				q2material.is_light = mat->is_light;
-				info.pQ2Material = &q2material;
-			}
+			q2material.roughness_override = resolved_mat->roughness_override;
+			q2material.metalness_factor = resolved_mat->metalness_factor;
+			q2material.emissive_factor = resolved_mat->emissive_factor;
+			q2material.specular_factor = resolved_mat->specular_factor;
+			q2material.base_factor = resolved_mat->base_factor;
+			q2material.bump_scale = resolved_mat->bump_scale;
+			q2material.kind = resolved_mat->kind;
+			q2material.is_light = resolved_mat->is_light;
+			info.pQ2Material = &q2material;
 		}
 
 		if (s->is_teleport && !CVAR_TO_BOOL (rt_classic_render))

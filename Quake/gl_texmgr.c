@@ -915,6 +915,8 @@ gltexture_t *TexMgr_NewTexture (void)
 	glt->rtcustomtextype = RT_CUSTOMTEXTUREINFO_TYPE_NONE;
 	glt->rtupoffset = 0.0f;
 	memset (glt->rtlightcolor, 0, sizeof (glt->rtlightcolor));
+	memset (glt->rtq2emissivecolor, 0, sizeof (glt->rtq2emissivecolor));
+	glt->rtq2islight = false;
 
 	return glt;
 }
@@ -1499,6 +1501,12 @@ static void TexMgr_PreMultiply32 (byte *in, size_t width, size_t height)
 	}
 }
 
+static float TexMgr_SRGBByteToLinear (byte value)
+{
+	const float c = value / 255.0f;
+	return c <= 0.04045f ? c / 12.92f : powf ((c + 0.055f) / 1.055f, 2.4f);
+}
+
 /*
 ================
 TexMgr_ApplyMaterialFromMat
@@ -1592,6 +1600,7 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 	const float baseFactor = (mat->base_factor > 0.0f) ? mat->base_factor : 1.0f;
 	const float roughOverride = mat->roughness_override; // 0 = use map-based roughness
 	const float defaultRough = rtspecial_default_rough / 255.0f;
+	double emissiveColorSum[3] = {0, 0, 0};
 
 	for (int i = 0; i < npix; i++)
 	{
@@ -1627,14 +1636,24 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 		float emiss = 0.0f;
 		if (emisBuf)
 		{
-			emiss = (0.2126f * emisBuf[i * 4 + 0] + 0.7152f * emisBuf[i * 4 + 1] + 0.0722f * emisBuf[i * 4 + 2]) / 255.0f;
-			emiss *= mat->emissive_factor;
+			const float er = TexMgr_SRGBByteToLinear (emisBuf[i * 4 + 0]) * mat->emissive_factor;
+			const float eg = TexMgr_SRGBByteToLinear (emisBuf[i * 4 + 1]) * mat->emissive_factor;
+			const float eb = TexMgr_SRGBByteToLinear (emisBuf[i * 4 + 2]) * mat->emissive_factor;
+			emissiveColorSum[0] += er;
+			emissiveColorSum[1] += eg;
+			emissiveColorSum[2] += eb;
+			emiss = 0.2126f * er + 0.7152f * eg + 0.0722f * eb;
 		}
 		else if (mat->synth_emissive || mat->is_light)
 		{
 			const float lum = (0.2126f * src[0] + 0.7152f * src[1] + 0.0722f * src[2]) / 255.0f;
 			if (mat->emissive_threshold <= 0 || lum > mat->emissive_threshold / 255.0f)
+			{
 				emiss = lum * mat->emissive_factor;
+				emissiveColorSum[0] += TexMgr_SRGBByteToLinear (src[0]) * mat->emissive_factor;
+				emissiveColorSum[1] += TexMgr_SRGBByteToLinear (src[1]) * mat->emissive_factor;
+				emissiveColorSum[2] += TexMgr_SRGBByteToLinear (src[2]) * mat->emissive_factor;
+			}
 		}
 
 		rme[i * 4 + 0] = CLAMP (0, (int)(rough * 255), 255);
@@ -1664,6 +1683,10 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 	if (normBuf) Mem_Free (normBuf);
 	if (emisBuf) Mem_Free (emisBuf);
 	if (glossBuf) Mem_Free (glossBuf);
+
+	glt->rtq2islight = mat->is_light;
+	for (int c = 0; c < 3; c++)
+		glt->rtq2emissivecolor[c] = npix > 0 ? (float)(emissiveColorSum[c] / npix) : 0.0f;
 
 	// debug: report which material was applied and the average emissive
 	extern cvar_t rt_mat_debug;
