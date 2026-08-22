@@ -483,6 +483,12 @@ Status legend:
 
 ## Debugging aids
 
+- `rt_texinfo` — aim the crosshair at a surface and run this (bound to `t` by
+  default in `default.cfg`; run `bind t rt_texinfo` once if your `config.cfg`
+  predates it) to log what is underneath. Alias models report model name, skin,
+  texture name, source file, `rtname`, emissive/light flags and material handle;
+  the world reports the impact point and surface normal. Useful for flagging
+  surfaces whose diffuse/emissive textures do not render.
 - `rt_q2bridge 1` — show the Q2RTX chain instead of the legacy frame.
 - `rt_q2debug N` - blit an intermediate Q2 image instead of the final one.
   Viewable (RGBA16F): 0 = TAA_OUTPUT (final), 1 = PT_BASE_COLOR_A (albedo),
