@@ -1303,6 +1303,7 @@ float GL_WaterAlphaForEntityTextureType (entity_t *ent, textype_t type)
 extern RgVertex *rtallbrushvertices;
 
 extern cvar_t rt_classic_render;
+extern cvar_t rt_q2lights;
 extern cvar_t rt_plight_intensity;
 extern cvar_t rt_plight_radius;
 extern cvar_t rt_wlight_intensity;
@@ -1317,10 +1318,30 @@ extern cvar_t rt_debug_lights;
 #define RT_USE_SPHERE_INSTEAD_OF_POLY 1
 
 #define MAX_WORLDLIGHTS_COUNT 2048
+// The world is drawn by NUM_WORLD_CBX parallel tasks (RT_R_DrawWorldTask), all
+// of which append emissive surfaces here, so the triangle counter has to be
+// atomic. It is reset once per frame by RT_ResetWorldModelLights, NOT inside
+// RT_DrawWorld - a reset there runs six times per frame and each worker wipes
+// what the others collected, which is why the world used to emit no lights.
 static RgPolygonalLightUploadInfo rt_wldlights_tri[MAX_WORLDLIGHTS_COUNT];
-static int                        rt_wldlights_tri_count = 0;
+static atomic_uint32_t            rt_wldlights_tri_count;
+// Built once per frame in RT_UploadAllWorldModelLights, after every world task
+// has finished, so this one stays a plain counter.
 static RgSphericalLightUploadInfo rt_wldlights_sph[MAX_WORLDLIGHTS_COUNT];
 static int                        rt_wldlights_sph_count = 0;
+
+// Reserved slots can exceed the array when a map overflows the cap; clamp.
+static int RT_WorldLightTriCount (void)
+{
+	const uint32_t n = Atomic_LoadUInt32 (&rt_wldlights_tri_count);
+	return (int)(n < MAX_WORLDLIGHTS_COUNT ? n : MAX_WORLDLIGHTS_COUNT);
+}
+
+void RT_ResetWorldModelLights (void)
+{
+	Atomic_StoreUInt32 (&rt_wldlights_tri_count, 0);
+	rt_wldlights_sph_count = 0;
+}
 
 #if RT_USE_SPHERE_INSTEAD_OF_POLY
 static RgPolygonalLightUploadInfo rt_tempbuffer[512];
@@ -1480,6 +1501,43 @@ static void RT_FlushBatch (rt_cb_context_t *cbx, const rt_uploadsurf_state_t *s,
 	// lights.
 	const qboolean is_poly_light = diffuse_tex && diffuse_tex->rtcustomtextype == RT_CUSTOMTEXTUREINFO_TYPE_POLY_LIGHT;
 
+	// TEMP G6c diagnostic: counts are approximate (this runs on all six world
+	// tasks), which is fine - we only need to know whether surfaces arrive
+	// here at all, whether they carry a diffuse texture, and what rtname the
+	// custom-info matcher is comparing against.
+	{
+		static int seen = 0, withtex = 0, polylit = 0, named = 0;
+		seen++;
+		if (diffuse_tex)
+			withtex++;
+		if (is_poly_light)
+			polylit++;
+
+		if (diffuse_tex && named < 10)
+		{
+			named++;
+			FILE *f = fopen ("q2light_game.txt", "a");
+			if (f)
+			{
+				fprintf (f, "Q2LIGHT/SURF: rtname='%s' name='%s' type=%d static=%d",
+				         diffuse_tex->rtname, diffuse_tex->name,
+				         diffuse_tex->rtcustomtextype, is_static_geom ? 1 : 0);
+				fputc ('\n', f);
+				fclose (f);
+			}
+		}
+		if ((seen % 5000) == 0)
+		{
+			FILE *f = fopen ("q2light_game.txt", "a");
+			if (f)
+			{
+				fprintf (f, "Q2LIGHT/SURF: seen=%d withtex=%d polylit=%d", seen, withtex, polylit);
+				fputc ('\n', f);
+				fclose (f);
+			}
+		}
+	}
+
 	if (is_poly_light)
 	{
 		const RgTransform transf = RT_GetBrushModelMatrix (s->ent);
@@ -1526,9 +1584,12 @@ static void RT_FlushBatch (rt_cb_context_t *cbx, const rt_uploadsurf_state_t *s,
 			{
 				// if it's a static geometry, then save light data
 				// to upload it each frame
-				if (rt_wldlights_tri_count < MAX_WORLDLIGHTS_COUNT)
+				// Runs on all NUM_WORLD_CBX world tasks at once: reserve the
+				// slot atomically.
+				const uint32_t slot = Atomic_AddUInt32 (&rt_wldlights_tri_count, 1);
+				if (slot < MAX_WORLDLIGHTS_COUNT)
 				{
-					rt_wldlights_tri[rt_wldlights_tri_count++] = light_info;
+					rt_wldlights_tri[slot] = light_info;
 				}
 				else
 				{
@@ -1995,9 +2056,11 @@ static void PolyToSphericalLights (const RgPolygonalLightUploadInfo *polys, int 
 
 void RT_DrawWorld (rt_cb_context_t *cbx, int index)
 {
-	rt_wldlights_sph_count = 0;
-	rt_wldlights_tri_count = 0;
-
+	// NOTE: no light-array reset here. This function is one of NUM_WORLD_CBX
+	// parallel invocations; resetting per call made each worker discard what
+	// the others had collected. The reset lives in RT_ResetWorldModelLights,
+	// and the poly -> sphere merge moved to RT_UploadAllWorldModelLights,
+	// which runs once after all world tasks are done.
 	if (!r_drawworld_cheatsafe)
 		return;
 
@@ -2005,10 +2068,6 @@ void RT_DrawWorld (rt_cb_context_t *cbx, int index)
 	if (!CVAR_TO_BOOL (rt_renderer) && !r_gpulightmapupdate.value)
 		R_UploadLightmaps ();
 	RT_DrawTextureChains_Multitexture (cbx, cl.worldmodel, NULL, chain_world, 1, world_texstart[index], world_texend[index], ENT_UNIQUEID_WORLD);
-
-#if RT_USE_SPHERE_INSTEAD_OF_POLY
-	PolyToSphericalLights (rt_wldlights_tri, rt_wldlights_tri_count, false);
-#endif
 }
 
 void RT_DrawWorld_Water (rt_cb_context_t *cbx)
@@ -2429,7 +2488,7 @@ static void RT_DebugDrawWorldLights (void)
 	}
 
 	// the original emissive light triangles (the poly -> sphere conversion source)
-	for (int i = 0; i < rt_wldlights_tri_count; i++)
+	for (int i = 0; i < RT_WorldLightTriCount (); i++)
 	{
 		const RgPolygonalLightUploadInfo *l = &rt_wldlights_tri[i];
 
@@ -2461,29 +2520,131 @@ static void RT_DebugDrawWorldLights (void)
 	}
 }
 
+/*
+=================
+RT_TriangleLightOrigin
+
+Picks the point used to look up an emissive triangle BSP leaf for the
+per-cluster light lists. The centroid lies ON the face plane, where
+Mod_PointInLeaf returns the leaf INSIDE the solid brush - an empty PVS, so
+the light would end up in no cluster at all and never be sampled. Offset
+along the face normal until the point lands in a non-solid leaf, trying both
+directions because the triangle winding is not guaranteed to face outwards.
+The sphere path gets this for free (AddSphericalLight pushes the center out
+by the light radius); RT_GetSurfaceCluster does the same for submodels.
+=================
+*/
+static void RT_TriangleLightOrigin (const RgPolygonalLightUploadInfo *l, vec3_t out)
+{
+	vec3_t centroid;
+	for (int a = 0; a < 3; a++)
+	{
+		centroid[a] = (l->positions[0].data[a] + l->positions[1].data[a] +
+		               l->positions[2].data[a]) * (1.0f / 3.0f);
+	}
+	VectorCopy (centroid, out);
+
+	vec3_t e1, e2, normal;
+	VectorSubtract (l->positions[1].data, l->positions[0].data, e1);
+	VectorSubtract (l->positions[2].data, l->positions[0].data, e2);
+	CrossProduct (e1, e2, normal);
+	if (VectorLength (normal) < 1e-6f)
+		return;
+	VectorNormalize (normal);
+
+	static const float offsets[] = {0.01f, 1.0f, 4.0f};
+	for (int i = 0; i < (int)countof (offsets); i++)
+	{
+		for (int sign = 1; sign >= -1; sign -= 2)
+		{
+			vec3_t point;
+			VectorMA (centroid, offsets[i] * (float)sign, normal, point);
+
+			mleaf_t *leaf = Mod_PointInLeaf (point, cl.worldmodel);
+			if (leaf && leaf->contents != CONTENTS_SOLID)
+			{
+				VectorCopy (point, out);
+				return;
+			}
+		}
+	}
+}
+
 void RT_UploadAllWorldModelLights (void)
 {
+#if RT_USE_SPHERE_INSTEAD_OF_POLY
+	// Merge coplanar emissive triangles into sphere lights. This used to run
+	// at the end of RT_DrawWorld, i.e. once per parallel world task on a
+	// partially filled array; here it runs once, after every world task has
+	// finished collecting.
+	PolyToSphericalLights (rt_wldlights_tri, RT_WorldLightTriCount (), false);
+#endif
+
+	// TEMP G6c diagnostic: how many emissive world surfaces the draw pass
+	// collected, and which representation is being uploaded. Sampled
+	// periodically because the first frames are still the menu.
+	{
+		static int calls = 0;
+		static int logged = 0;
+		calls++;
+		if (logged < 20 && (calls <= 3 || (calls % 120) == 0))
+		{
+			logged++;
+			FILE *f = fopen ("q2light_game.txt", "a");
+			if (f)
+			{
+				fprintf (f, "Q2LIGHT/GAME: call=%d q2lights=%d tri=%d sph=%d custom=%d worldmodel=%d leafs=%d",
+				         calls, CVAR_TO_BOOL (rt_q2lights) ? 1 : 0,
+				         RT_WorldLightTriCount (), rt_wldlights_sph_count,
+				         rt_customlights_curr_count,
+				         cl.worldmodel ? 1 : 0,
+				         cl.worldmodel ? cl.worldmodel->numleafs : -1);
+				fputc ('\n', f);
+				fclose (f);
+			}
+		}
+	}
+
 	// debug view: wireframe of the generated light sources
 	if (CVAR_TO_BOOL (rt_debug_lights))
 	{
 		RT_DebugDrawWorldLights ();
 	}
 
-#if RT_USE_SPHERE_INSTEAD_OF_POLY
-	for (int i = 0; i < rt_wldlights_sph_count; i++)
+	// rt_q2lights: the Q2RTX lighting model. Every emissive world triangle
+	// stays a triangle and is sampled as an area light (light_lists.h
+	// spherical_tri_area), which is what fills light_polys on the renderer
+	// side. Each triangle is registered separately so the PVS cluster lists
+	// resolve to its light_polys index.
+	//
+	// rt_q2lights 0 keeps the legacy path: coplanar emissive triangles are
+	// merged into sphere lights (fewer, larger sources - cheaper for the
+	// legacy sampler, but not the Q2RTX model).
+	if (CVAR_TO_BOOL (rt_q2lights))
 	{
-		RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &rt_wldlights_sph[i]);
-		RG_CHECK (r);
+		for (int i = 0; i < RT_WorldLightTriCount (); i++)
+		{
+			const RgPolygonalLightUploadInfo *l = &rt_wldlights_tri[i];
 
-		RT_ClusterLightAdd (rt_wldlights_sph[i].uniqueID, rt_wldlights_sph[i].position.data, -1.0f);
+			RgResult r = rgUploadPolygonalLight (vulkan_globals_rt.instance, l);
+			RG_CHECK (r);
+
+			vec3_t origin;
+			RT_TriangleLightOrigin (l, origin);
+
+			RT_ClusterLightAddUnique (l->uniqueID, origin, -1.0f);
+		}
 	}
-#else
-	for (int i = 0; i < rt_wldlights_tri_count; i++)
+	else
 	{
-		RgResult r = rgUploadPolygonalLight (vulkan_globals_rt.instance, &rt_wldlights_tri[i]);
-		RG_CHECK (r);
+		for (int i = 0; i < rt_wldlights_sph_count; i++)
+		{
+			RgResult r = rgUploadSphericalLight (vulkan_globals_rt.instance, &rt_wldlights_sph[i]);
+			RG_CHECK (r);
+
+			RT_ClusterLightAdd (rt_wldlights_sph[i].uniqueID, rt_wldlights_sph[i].position.data, -1.0f);
+		}
 	}
-#endif
 
 	for (int i = 0; i < rt_customlights_curr_count; i++)
 	{

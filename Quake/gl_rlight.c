@@ -33,7 +33,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // renderer, which resolves the unique IDs to its light-array indices.
 // ============================================================================
 
-#define RT_CLUSTER_MAX_LIGHTS    1024
+#define RT_CLUSTER_MAX_LIGHTS    4096
 #define RT_CLUSTER_MAX_PER_LIST  64    // must match Q2_LIGHT_LIST_MAX_PER_CELL
 #define RT_CLUSTER_MAX_CLUSTERS  8192  // must match Q2_MAX_CLUSTERS
 
@@ -63,6 +63,21 @@ void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin, float influence
 		if (rt_cluster_lights[i].uniqueID == uniqueID)
 			return;
 	}
+
+	rt_cluster_lights[rt_cluster_light_count].uniqueID = uniqueID;
+	VectorCopy (origin, rt_cluster_lights[rt_cluster_light_count].origin);
+	rt_cluster_lights[rt_cluster_light_count].influenceRadius = influenceRadius;
+	rt_cluster_light_count++;
+}
+
+// Same as RT_ClusterLightAdd, but skips the duplicate scan. The Q2RTX
+// polygonal light path registers one entry per emissive triangle, whose
+// unique IDs are distinct by construction (surface index + triangle index),
+// and the linear scan would be O(n^2) over a few thousand entries per frame.
+void RT_ClusterLightAddUnique (uint64_t uniqueID, const vec3_t origin, float influenceRadius)
+{
+	if (rt_cluster_light_count >= RT_CLUSTER_MAX_LIGHTS)
+		return;
 
 	rt_cluster_lights[rt_cluster_light_count].uniqueID = uniqueID;
 	VectorCopy (origin, rt_cluster_lights[rt_cluster_light_count].origin);

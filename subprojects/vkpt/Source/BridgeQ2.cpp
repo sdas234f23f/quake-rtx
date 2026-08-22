@@ -90,11 +90,23 @@ void BridgeQ2::Run(VkCommandBuffer cmd, uint32_t frameIndex,
     VkImage q2TaaOutput = framebuffersQ2->GetImage(VKPT_IMG_TAA_OUTPUT);
 
     // G5 debug (rt_q2debug): blit an intermediate Q2 image instead of the
-    // final one. 0 = TAA_OUTPUT, 1 = albedo, 2 = ASVGF_COLOR,
-    // 3 = FLAT_COLOR (after checkerboard interleave), 4 = ASVGF_TAA_A (TAA
-    // history/output), 5 = PT_COLOR_HF (direct lighting), 6 =
-    // ASVGF_ATROUS_PING_HF (after temporal), 7 = ASVGF_TAA_B (TAA prev),
-    // 8 = PT_METALLIC_A (red = metallic, green = roughness, G6 diagnostic).
+    // final one.
+    //
+    // Viewable (RGBA16F, the blit converts to the RGBA8 final image; HDR
+    // values above 1 clamp to white):
+    //   0 = TAA_OUTPUT (the real final image)
+    //   1 = PT_BASE_COLOR_A (albedo)
+    //   2 = ASVGF_COLOR (lighting after denoise + compositing)
+    //   3 = FLAT_COLOR (after checkerboard interleave)
+    //   4 = ASVGF_TAA_A, 7 = ASVGF_TAA_B (TAA history)
+    //
+    // NOT viewable - these are R32_UINT images holding packed/encoded values,
+    // and blitting them into an RGBA8 image produces meaningless colours.
+    // Use 2 or 0 to judge lighting instead:
+    //   5 = PT_COLOR_HF, 6 = ASVGF_ATROUS_PING_HF
+    //
+    // Partially viewable:
+    //   8 = PT_METALLIC_A (R8G8: red = metallic, green = roughness)
     // Packed in bits 16..19: bit 12 is RG_DEBUG_DRAW_Q2_BRIDGE_BIT (4096)
     // and always set while the bridge is on, so bits 12..15 were shifted by
     // one (rt_q2debug N showed image N+1).

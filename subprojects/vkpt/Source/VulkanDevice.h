@@ -36,6 +36,7 @@
 #include "GlobalUniform.h"
 #include "GlobalUniformQ2.h"
 #include "VertexBufferQ2.h"
+#include "LightManagerQ2.h"
 #include "GeometryQ2.h"
 #include "ASManagerQ2.h"
 #include "PathTracerQ2.h"
@@ -187,6 +188,7 @@ private:
     std::shared_ptr<GlobalUniform>          uniform;
     std::shared_ptr<GlobalUniformQ2>        uniformQ2;
     std::shared_ptr<VertexBufferQ2>         vertexBufferQ2;
+    std::shared_ptr<LightManagerQ2>         lightManagerQ2;
     std::shared_ptr<GeometryQ2>             geometryQ2;
     std::shared_ptr<ASManagerQ2>            asManagerQ2;
     std::shared_ptr<PathTracerQ2>           pathTracerQ2;

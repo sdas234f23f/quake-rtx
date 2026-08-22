@@ -967,6 +967,7 @@ void RT_UploadAllElights (void);
 // Q2RTX per-BSP-cluster light lists (built from the PVS on the CPU).
 void RT_ClusterLightListsReset (void);
 void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin, float influenceRadius);
+void RT_ClusterLightAddUnique (uint64_t uniqueID, const vec3_t origin, float influenceRadius);
 void RT_ClusterLightListsUpload (void);
 
 void RT_CustomLights_Parse (void);
@@ -1141,6 +1142,7 @@ void RT_GL_Viewport (rt_cb_context_t *cbx, float x, float y, float width, float 
 
 // q2rtx: RT renderer draw entry points (defined in r_world.c / gl_sky.c /
 // r_alias.c / r_brush.c / r_sprite.c / r_part.c)
+void RT_ResetWorldModelLights (void);
 void RT_DrawWorld (rt_cb_context_t *cbx, int index);
 void RT_DrawWorld_Water (rt_cb_context_t *cbx);
 void RT_DrawWorld_ShowTris (rt_cb_context_t *cbx);

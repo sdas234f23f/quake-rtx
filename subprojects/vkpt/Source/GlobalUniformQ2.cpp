@@ -18,7 +18,9 @@ using namespace vkpt;
 namespace
 {
 
-void FillUniformBuffer(QVKUniformBuffer_t &ubo, const ShGlobalUniform &src)
+void FillUniformBuffer(QVKUniformBuffer_t &ubo, const ShGlobalUniform &src,
+                       uint32_t staticLightCount,
+                       const void *dynLightData, uint32_t dynLightCount)
 {
     memset(&ubo, 0, sizeof(ubo));
 
@@ -64,27 +66,32 @@ void FillUniformBuffer(QVKUniformBuffer_t &ubo, const ShGlobalUniform &src)
     ubo.first_person_model = 1;
     ubo.environment_type   = 0;
 
-    // Fake sun for the direct lighting pass (G5): a warm white sun overhead.
-    // sun_direction points TOWARD the sun. Quake 1 is Z-up. The real
-    // sky/sun comes with the sky port (G6); the 53-degree tilt makes walls
-    // facing +X visibly lit, unlike a strictly overhead sun.
-    ubo.sun_visible = 1;
-    ubo.sun_direction[0] = 0.6f;
-    ubo.sun_direction[1] = 0.0f;
-    ubo.sun_direction[2] = 0.8f;
-    ubo.sun_direction_envmap[0] = 0.6f;
-    ubo.sun_direction_envmap[1] = 0.0f;
-    ubo.sun_direction_envmap[2] = 0.8f;
-    ubo.sun_tangent[0] = 1.0f;  ubo.sun_tangent[1] = 0.0f; ubo.sun_tangent[2] = 0.0f;
-    ubo.sun_bitangent[0] = 0.0f; ubo.sun_bitangent[1] = 1.0f; ubo.sun_bitangent[2] = 0.0f;
-    ubo.sun_tan_half_angle = 0.0046f; // ~0.53 deg angular size
-    ubo.sun_cos_half_angle = 0.99999f;
-    ubo.sun_solid_angle = 0.0000665f;
-    ubo.sun_bounce_scale = 1.0f;
-    ubo.sun_color[0] = 1.0f;
-    ubo.sun_color[1] = 0.95f;
-    ubo.sun_color[2] = 0.85f;
+    // G6c: the G5 placeholder sun is gone - Quake has no sun, all lighting
+    // comes from the emissive surfaces in light_polys. pt_direct_sun_light
+    // stays on so the sky port can switch it back on by setting sun_visible.
+    ubo.sun_visible = 0;
     ubo.pt_env_scale = 1.0f;
+
+    // Number of entries LightManagerQ2 wrote into light_polys. Zero disables
+    // polygonal light sampling entirely (get_direct_illumination early-outs).
+    ubo.num_static_lights = static_cast<int>(staticLightCount);
+
+    // Point lights (dlights, entity lights, world_custom_lights.txt).
+    // light_lists.h samples these independently of the per-cluster polygon
+    // lists, so they light a map even where no emissive surfaces exist.
+    if (dynLightData && dynLightCount > 0)
+    {
+        const uint32_t n = std::min(dynLightCount, static_cast<uint32_t>(MAX_LIGHT_SOURCES));
+        memcpy(ubo.dyn_light_data, dynLightData, n * sizeof(DynLightData));
+        ubo.num_dyn_lights = static_cast<int>(n);
+    }
+
+    // Statistical light PDF correction reads and writes the light stats
+    // buffers, whose size is num_clusters * num_static_lights * 12 uints -
+    // unbounded, and still on the null buffer here. Keep it off until those
+    // buffers exist (PORTING.md G6c follow-up); the shader then skips both
+    // the atomicAdd in path_tracer_rgen.h and the read in light_lists.h.
+    ubo.pt_light_stats = 0;
 
     // Camera.
     memcpy(ubo.cam_pos,  src.cameraPosition, 3 * sizeof(float));
@@ -240,7 +247,9 @@ void GlobalUniformQ2::Upload(VkCommandBuffer cmd, uint32_t frameIndex, const ShG
     CmdLabel label(cmd, "Copying Q2RTX uniform");
 
     QVKUniformBuffer_t ubo;
-    FillUniformBuffer(ubo, *src);
+    FillUniformBuffer(ubo, *src, staticLightCount,
+                      dynLightsCpu.empty() ? nullptr : dynLightsCpu.data(),
+                      dynLightCount);
 
     const VkDeviceSize instanceOffset =
         (sizeof(QVKUniformBuffer_t) + Q2_UBO_ALIGNMENT - 1) & ~(Q2_UBO_ALIGNMENT - 1);
@@ -261,6 +270,26 @@ void GlobalUniformQ2::Upload(VkCommandBuffer cmd, uint32_t frameIndex, const ShG
     }
 
     buffer->CopyFromStaging(cmd, frameIndex, instanceOffset + sizeof(InstanceBuffer));
+}
+
+void GlobalUniformQ2::SetDynLights(const void *data, uint32_t count)
+{
+    dynLightCount = count;
+    if (data && count > 0)
+    {
+        const size_t bytes = static_cast<size_t>(count) * sizeof(DynLightData);
+        dynLightsCpu.assign(static_cast<const uint8_t *>(data),
+                            static_cast<const uint8_t *>(data) + bytes);
+    }
+    else
+    {
+        dynLightsCpu.clear();
+    }
+}
+
+void GlobalUniformQ2::SetStaticLightCount(uint32_t count)
+{
+    staticLightCount = count;
 }
 
 void GlobalUniformQ2::SetInstanceBuffer(const void *pData, size_t size)

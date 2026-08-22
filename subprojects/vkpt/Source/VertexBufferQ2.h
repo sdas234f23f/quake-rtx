@@ -42,6 +42,23 @@ public:
     // by GeometryQ2::SubmitStatic after the static level uploads.
     void SetQ2Materials(const uint32_t *entries, uint32_t count);
 
+    // Stage G6c: Q2RTX light data, filled by LightManagerQ2 every frame.
+
+    // Emissive triangles as Q2RTX LightPolygon entries: LIGHT_POLY_VEC4S
+    // vec4 per light (positions.xyz + color in the .w lanes, then the two
+    // light style scales). Clamped to MAX_LIGHT_POLYS.
+    void SetLightPolys(const float *vec4Data, uint32_t count);
+
+    // Per-cluster light lists: prefix-sum offsets (numClusters + 1 entries)
+    // and the concatenated light-poly indices.
+    void SetClusterLightLists(uint32_t numClusters, const uint32_t *offsets,
+                              const uint32_t *indices, uint32_t totalCount);
+
+    // Per-cluster sample counts for one history slot. sample_polygonal_lights
+    // takes the light count from here, NOT from the offsets array, so this
+    // has to be written or no light is ever sampled.
+    void SetLightCounts(uint32_t historyIndex, const uint32_t *counts, uint32_t numClusters);
+
 private:
     void CreateDescriptors();
     void FillLightBuffer();
@@ -69,6 +86,12 @@ private:
     // Real backing for the sun/sky color buffer, written by
     // sky_buffer_resolve.comp and bound as both storage and UBO.
     Buffer sunColorBuffer;
+
+    // Real backing for the per-cluster light counts (LIGHT_COUNT_HISTORY
+    // slots; the shader picks one by frame number from the RNG seed).
+    // Sized for MAX_LIGHT_LISTS clusters so it never needs resizing.
+    // The literal 3 is asserted against LIGHT_COUNT_HISTORY in the .cpp.
+    Buffer lightCountsHistory[3];
 
     VkDescriptorPool      descPool;
     VkDescriptorSetLayout descSetLayout;

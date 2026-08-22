@@ -9,6 +9,7 @@
 #include "../q2rtx-shaders/vertex_buffer.h"
 
 #include <cstring>
+#include <iterator>
 #include <vector>
 
 using namespace vkpt;
@@ -53,13 +54,32 @@ VertexBufferQ2::VertexBufferQ2(VkDevice _device, std::shared_ptr<MemoryAllocator
                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                         "Q2RTX sun color buffer");
 
-    // Real LightBuffer (material table + light lists). Only the default
-    // material and the sky-visibility mask are filled for now; the light
-    // lists come with the light port.
+    // Real LightBuffer (material table + light polys + per-cluster lists),
+    // host-visible so LightManagerQ2 can rewrite the light data every frame.
     lightBuffer.Init(_allocator, sizeof(LightBuffer),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                      "Q2RTX light buffer");
+
+    // Per-cluster light counts, one buffer per history slot. Q2RTX sizes
+    // these by the actual cluster count; MAX_LIGHT_LISTS entries is 64 KB
+    // each, which is cheap enough to allocate once and never resize.
+    static_assert(std::size(lightCountsHistory) == LIGHT_COUNT_HISTORY,
+                  "lightCountsHistory must have LIGHT_COUNT_HISTORY slots");
+    for (size_t i = 0; i < std::size(lightCountsHistory); i++)
+    {
+        lightCountsHistory[i].Init(_allocator, sizeof(uint32_t) * MAX_LIGHT_LISTS,
+                                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                   "Q2RTX light counts history");
+
+        if (void *mapped = lightCountsHistory[i].Map())
+        {
+            memset(mapped, 0, sizeof(uint32_t) * MAX_LIGHT_LISTS);
+            lightCountsHistory[i].Unmap();
+        }
+    }
 
     FillLightBuffer();
     FillSunColor();
@@ -73,6 +93,10 @@ VertexBufferQ2::~VertexBufferQ2()
     vkDestroyDescriptorSetLayout(device, descSetLayout, nullptr);
 
     sunColorBuffer.Destroy();
+    for (auto &buf : lightCountsHistory)
+    {
+        buf.Destroy();
+    }
     lightBuffer.Destroy();
     readbackBuffer.Destroy();
     toneMappingBuffer.Destroy();
@@ -144,6 +168,103 @@ void VertexBufferQ2::SetQ2Materials(const uint32_t *entries, uint32_t count)
                 static_cast<size_t>(count) * MATERIAL_UINTS * sizeof(uint32_t));
 
     lightBuffer.Unmap();
+}
+
+void VertexBufferQ2::SetLightPolys(const float *vec4Data, uint32_t count)
+{
+    if (count > MAX_LIGHT_POLYS)
+    {
+        count = MAX_LIGHT_POLYS;
+    }
+
+    void *mapped = lightBuffer.Map();
+    if (!mapped)
+    {
+        return;
+    }
+
+    LightBuffer *lb = static_cast<LightBuffer *>(mapped);
+
+    if (count > 0 && vec4Data)
+    {
+        std::memcpy(lb->light_polys, vec4Data,
+                    static_cast<size_t>(count) * LIGHT_POLY_VEC4S * 4 * sizeof(float));
+    }
+
+    lightBuffer.Unmap();
+}
+
+void VertexBufferQ2::SetClusterLightLists(uint32_t numClusters, const uint32_t *offsets,
+                                          const uint32_t *indices, uint32_t totalCount)
+{
+    if (numClusters + 1 > MAX_LIGHT_LISTS)
+    {
+        numClusters = MAX_LIGHT_LISTS - 1;
+    }
+    if (totalCount > MAX_LIGHT_LIST_NODES)
+    {
+        totalCount = MAX_LIGHT_LIST_NODES;
+    }
+
+    void *mapped = lightBuffer.Map();
+    if (!mapped)
+    {
+        return;
+    }
+
+    LightBuffer *lb = static_cast<LightBuffer *>(mapped);
+
+    if (offsets && numClusters > 0)
+    {
+        std::memcpy(lb->light_list_offsets, offsets,
+                    static_cast<size_t>(numClusters + 1) * sizeof(uint32_t));
+
+        // Every cluster past the map's cluster count must still produce an
+        // empty range: sample_polygonal_lights reads offsets[idx] and
+        // offsets[idx + 1] without bounds-checking the cluster index.
+        const uint32_t tail = lb->light_list_offsets[numClusters];
+        for (uint32_t i = numClusters + 1; i < MAX_LIGHT_LISTS; i++)
+        {
+            lb->light_list_offsets[i] = tail;
+        }
+    }
+
+    if (indices && totalCount > 0)
+    {
+        std::memcpy(lb->light_list_lights, indices,
+                    static_cast<size_t>(totalCount) * sizeof(uint32_t));
+    }
+
+    lightBuffer.Unmap();
+}
+
+void VertexBufferQ2::SetLightCounts(uint32_t historyIndex, const uint32_t *counts,
+                                    uint32_t numClusters)
+{
+    if (historyIndex >= std::size(lightCountsHistory) || !counts)
+    {
+        return;
+    }
+    if (numClusters > MAX_LIGHT_LISTS)
+    {
+        numClusters = MAX_LIGHT_LISTS;
+    }
+
+    void *mapped = lightCountsHistory[historyIndex].Map();
+    if (!mapped)
+    {
+        return;
+    }
+
+    std::memcpy(mapped, counts, static_cast<size_t>(numClusters) * sizeof(uint32_t));
+    // Clusters beyond the map's count must read as zero lights.
+    if (numClusters < MAX_LIGHT_LISTS)
+    {
+        std::memset(static_cast<uint32_t *>(mapped) + numClusters, 0,
+                    static_cast<size_t>(MAX_LIGHT_LISTS - numClusters) * sizeof(uint32_t));
+    }
+
+    lightCountsHistory[historyIndex].Unmap();
 }
 
 void VertexBufferQ2::FillSunColor()
@@ -298,9 +419,13 @@ void VertexBufferQ2::CreateDescriptors()
     {
         info = nullInfo;
     }
-    for (auto &info : lightCountInfos)
+    for (size_t i = 0; i < lightCountInfos.size(); i++)
     {
-        info = nullInfo;
+        // Real per-cluster light count buffers; sample_polygonal_lights reads
+        // the light count from here, so these must not stay on the null buffer.
+        lightCountInfos[i].buffer = lightCountsHistory[i].GetBuffer();
+        lightCountInfos[i].offset = 0;
+        lightCountInfos[i].range = VK_WHOLE_SIZE;
     }
     for (auto &info : lightStatsInfos)
     {

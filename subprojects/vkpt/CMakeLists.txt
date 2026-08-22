@@ -73,6 +73,7 @@ set(vkpt_SOURCES
     Source/ImageComposition.cpp
     Source/Tonemapping.cpp
     Source/LightManager.cpp
+    Source/LightManagerQ2.cpp
     Source/AutoBuffer.cpp
     Source/ASComponent.cpp
     Source/CubemapManager.cpp

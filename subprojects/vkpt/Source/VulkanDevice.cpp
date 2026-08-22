@@ -105,6 +105,9 @@ VkCommandBuffer VulkanDevice::BeginFrame(const RgStartFrameInfo &startInfo)
     // start dynamic geometry recording to current frame
     scene->PrepareForFrame(cmd, frameIndex);
 
+    // Q2RTX light data is rebuilt from scratch every frame (PORTING.md G6c).
+    lightManagerQ2->PrepareForFrame();
+
     return cmd;
 }
 
@@ -1133,8 +1136,17 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
     if (renderResolution.Width() > 0 && renderResolution.Height() > 0)
     {
         FillUniform(uniform->GetData(), *drawInfo);
-        // Prepare the Q2RTX-convention UBO and framebuffers alongside the
-        // legacy ones. Not bound to any pipeline yet (PORTING.md, S2b).
+
+        // G6c: resolve this frame's polygonal lights and per-cluster lists
+        // into the Q2 LightBuffer before the UBO is filled, so
+        // num_static_lights matches what the shaders will read.
+        lightManagerQ2->Submit(uniform->GetData()->frameId);
+        uniformQ2->SetStaticLightCount(lightManagerQ2->GetLightPolyCount());
+        uniformQ2->SetDynLights(lightManagerQ2->GetDynLightData(),
+                                lightManagerQ2->GetDynLightCount());
+
+        // Q2RTX-convention UBO and framebuffers, filled alongside the legacy
+        // ones and consumed by the Q2RTX chain below (PORTING.md, S2b/G4).
         uniformQ2->Upload(cmd, currentFrameState.GetFrameIndex(), uniform->GetData());
         framebuffersQ2->Create(renderResolution.Width(), renderResolution.Height(), 1);
 
@@ -1439,6 +1451,9 @@ void VulkanDevice::UploadSphericalLight(const RgSphericalLightUploadInfo *pLight
     }
 
     scene->UploadLight(currentFrameState.GetFrameIndex(), *pLightInfo);
+
+    // Q2RTX path: point lights live in the UBO dyn_light_data array.
+    lightManagerQ2->AddSphericalLight(*pLightInfo);
 }
 
 void VulkanDevice::UploadSpotlight(const RgSpotLightUploadInfo *pLightInfo)
@@ -1459,6 +1474,9 @@ void vkpt::VulkanDevice::UploadPolygonalLight(const RgPolygonalLightUploadInfo *
     }
 
     scene->UploadLight(currentFrameState.GetFrameIndex(), *pLightInfo);
+
+    // Q2RTX path: the same triangle becomes a LightPolygon area light.
+    lightManagerQ2->AddPolygonalLight(*pLightInfo);
 }
 
 void VulkanDevice::UploadClusterLightLists(const RgClusterLightListsUploadInfo *pInfo)
@@ -1470,6 +1488,12 @@ void VulkanDevice::UploadClusterLightLists(const RgClusterLightListsUploadInfo *
 
     scene->GetLightManager()->SetClusterLightLists(
         currentFrameState.GetFrameIndex(),
+        pInfo->numClusters,
+        pInfo->pOffsets,
+        pInfo->pLightUniqueIds,
+        pInfo->totalLightCount);
+
+    lightManagerQ2->SetClusterLightLists(
         pInfo->numClusters,
         pInfo->pOffsets,
         pInfo->pLightUniqueIds,

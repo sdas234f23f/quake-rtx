@@ -39,6 +39,15 @@ public:
     // acceleration structures are built.
     void SetInstanceBuffer(const void *pData, size_t size);
 
+    // Stage G6c: how many entries LightManagerQ2 wrote into light_polys.
+    // Goes into ubo.num_static_lights, which sizes the light stats
+    // addressing and gates polygonal light sampling.
+    void SetStaticLightCount(uint32_t count);
+
+    // Stage G6c: point lights for ubo.dyn_light_data / num_dyn_lights.
+    // data holds count packed DynLightData entries.
+    void SetDynLights(const void *data, uint32_t count);
+
     VkDescriptorSet GetDescSet() const;
     VkDescriptorSetLayout GetDescSetLayout() const;
 
@@ -50,6 +59,9 @@ private:
 
     std::shared_ptr<AutoBuffer> buffer;
     std::vector<uint8_t> instanceBufferCpu;
+    uint32_t staticLightCount = 0;
+    std::vector<uint8_t> dynLightsCpu;
+    uint32_t dynLightCount = 0;
 
     VkDescriptorPool      descPool;
     VkDescriptorSetLayout descSetLayout;

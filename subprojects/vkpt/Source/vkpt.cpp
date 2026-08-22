@@ -21,6 +21,8 @@
 #include "VulkanDevice.h"
 #include "RgException.h"
 
+#include <cstdio>
+
 using namespace vkpt;
 
 constexpr uint32_t MAX_DEVICE_COUNT = 8;
@@ -45,6 +47,15 @@ static VulkanDevice &GetDevice(RgInstance rgInstance)
 
 static void TryPrintError(RgInstance rgInstance, const char *pMessage)
 {
+    // TEMP G6c diagnostic: the console message is easy to lose if the game
+    // dies right after, so mirror it to a file (remove with the other dumps).
+    if (FILE *f = std::fopen("q2crash.txt", "a"))
+    {
+        std::fprintf(f, "%s", pMessage ? pMessage : "(null)");
+        std::fputc('\n', f);
+        std::fclose(f);
+    }
+
     auto it = G_DEVICES.find(rgInstance);
 
     if (it != G_DEVICES.end())
@@ -123,10 +134,18 @@ static auto Call(RgInstance rgInstance, Func f, Args&&... args)
 
         (dev.*f)(std::forward<Args>(args)...);
     }
-    catch (vkpt::RgException &e) 
+    catch (vkpt::RgException &e)
     {
         TryPrintError(rgInstance, e.what());
         return e.GetErrorCode();
+    }
+    catch (std::exception &e)
+    {
+        // See the note on the other Call overload: without this, any
+        // std::bad_alloc / length_error from inside the renderer escapes the
+        // C API boundary as std::terminate() and a bare abort().
+        TryPrintError(rgInstance, e.what());
+        return RG_GRAPHICS_API_ERROR;
     }
     return RG_SUCCESS;
 }
@@ -150,6 +169,14 @@ static auto Call(RgInstance rgInstance, Func f, Args&&... args)
     }
     catch (vkpt::RgException &e)
     {
+        TryPrintError(rgInstance, e.what());
+    }
+    catch (std::exception &e)
+    {
+        // This is a C API boundary: letting any other exception escape into
+        // the caller means std::terminate() and a bare abort() with no
+        // message, which is exactly what a std::bad_alloc / length_error from
+        // a container inside the renderer used to produce.
         TryPrintError(rgInstance, e.what());
     }
     return ReturnType{};

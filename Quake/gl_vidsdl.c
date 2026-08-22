@@ -264,6 +264,7 @@ qboolean           request_shaders_reload = false;
 	CVAR_DEF_T (rt_debug_lights, "0") \
 	CVAR_DEF_T (rt_q2bridge, "1") \
 	CVAR_DEF_T (rt_q2debug, "0") \
+	CVAR_DEF_T (rt_q2lights, "1") \
 
 
 #define CVAR_DEF_T(name, default_value) cvar_t name = {#name, default_value, CVAR_ARCHIVE};

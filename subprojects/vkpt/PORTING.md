@@ -13,7 +13,16 @@ End state: the `RG_*` library API is removed entirely.
   that `Source/Shaders/GenerateShaders.py` does not see it (it compiles only
   the files in `Source/Shaders/` itself).
 - `C:\Users\f1am3d\repos\Q2RTX\src\refresh\vkpt` — the Q2RTX renderer source
-  (113 files, ~37k lines, GPL-2.0).
+  (113 files, ~37k lines, GPL-2.0). Reference only; nothing is edited there.
+
+`C:\Users\f1am3d\repos\vkquake-rt` is an **earlier experimental fork**, kept only
+for reference. Nothing is ported from it — the cluster / light-list groundwork it
+pioneered is already committed in this repository (see `Quake/gl_rlight.c`,
+`Quake/r_brush.c`, `Source/LightManager.cpp`).
+
+See `ARCHITECTURE.md` for the structural map between the two engines: frame
+lifecycle, data-structure correspondence, the descriptor-set contract, and the
+invariants the Q2RTX shaders depend on.
 
 ## Why shaders cannot be swapped in isolation
 
@@ -24,11 +33,231 @@ hundreds of lines. The Q2RTX shaders use `global_ubo.h`, `global_textures.h`,
 `shader_structs.h` and `vertex_buffer.h` — checked-in files whose layouts the
 Q2RTX C++ code fills in.
 
-Therefore the shader swap has two stages:
+Therefore the port has two axes, run in sequence:
 
-- **S1 (done)**: vendor the Q2RTX shader set verbatim + this mapping document.
-- **S2**: port the binding layer (uniform buffer layout, framebuffer indices,
-  descriptor sets) to the Q2RTX conventions, then swap shaders one by one.
+- **S — shader/binding axis**: adopt the Q2RTX dual C/GLSL headers as the
+  binding contract, then swap shaders one by one. Done (S1–S3).
+- **G — geometry/lighting axis**: feed those bindings with real scene data
+  until the Q2RTX chain is self-sufficient, then delete the legacy renderer.
+  In progress.
+
+## Stage S — binding layer and shader swaps (done)
+
+- **S1**: vendor the Q2RTX shader set verbatim + the mapping table below.
+- **S2a**: shader toolchain validated. All 46 compilable files in
+  `q2rtx-shaders/` build with `glslc --target-env=vulkan1.2 -DVKPT_SHADER`
+  (Q2RTX compiles them the same way via glslangValidator, see
+  `Q2RTX/cmake/compileShaders.cmake`). The FSR shaders additionally need the
+  `fsr/` include path (vendored: `ffx_a.h`, `ffx_fsr1.h`, AMD MIT).
+  `GenerateShadersQ2RTX.py` (our own tool) compiles the set into
+  `Build/q2rtx/*.spv` with an mtime cache.
+- **S2b**: the dual C++/GLSL headers are the binding contract and the C++ side
+  fills them:
+  - `global_ubo.h` — flat `QVKUniformBuffer_t` of the `UBO_CVAR_LIST` cvars
+    (std140, set = `GLOBAL_UBO_DESC_SET_IDX`, binding 0), filled by iterating
+    the same list (Q2RTX main.c does this). Handled by `GlobalUniformQ2`.
+  - Instance SSBO — binding 1 (`GLOBAL_INSTANCE_BUFFER_BINDING_IDX`) in the
+    same buffer, offset `align(sizeof(QVKUniformBuffer_t), 256)`, like Q2RTX
+    `uniform_buffer.c`. `InstanceBuffer`/`ModelInstance` layout verified by
+    `check_q2rtx_ubo.py` (C == std140, 1736832 B / 192 B). Handled by
+    `GlobalUniformQ2`.
+  - `global_textures.h` — `LIST_IMAGES`/`LIST_IMAGES_A_B` define every
+    framebuffer image/texture and the global texture array
+    (`GLOBAL_TEXTURES_DESC_SET_IDX`, bindings offset by `BINDING_OFFSET_IMAGES`
+    / `BINDING_OFFSET_TEXTURES`). Handled by `FramebuffersQ2`.
+  - `vertex_buffer.h`, `constants.h`, `shader_structs.h` — set 3
+    (`VERTEX_BUFFER_DESC_SET_IDX`): primitive array, position / light /
+    light-counts-history / IQM / readback / tonemap / sun-color / light-stats
+    bindings, mirroring Q2RTX `vertex_buffer.c`. Handled by `VertexBufferQ2`.
+- **S3**: post-processing swapped onto the Q2RTX shaders — checkerboard
+  interleave, bloom (downscale + blur h/v + composite), compositing, ASVGF
+  (temporal, gradient image, LF, a-trous), tone mapping (histogram + curve +
+  apply), TAA upscale, sky buffer resolve, blue noise. `BridgeQ2` (`rt_q2bridge`)
+  copies the Q2RTX result into the legacy `FB_IMAGE_INDEX_FINAL` so it reaches
+  the screen.
+
+## Stage G — scene data (in progress)
+
+Done:
+
+- **G1**: `GeometryQ2` builds the Q2 world primitive buffer (`VboPrimitive` +
+  BLAS source positions) from the legacy static geometry uploads.
+- **G2**: `ASManagerQ2` builds BLAS + TLAS and fills the `InstanceBuffer`.
+- **G3**: `PathTracerQ2` creates the Q2RTX ray tracing pipeline (9 shader
+  groups, Q2RTX SBT layout) and traces primary rays into the G-buffer.
+- **G4**: the on-screen source is the Q2RTX chain (`rt_q2bridge 1`).
+- **G5**: `direct_lighting.rgen` on screen. Lit by a **placeholder sun**
+  hard-coded in `GlobalUniformQ2.cpp` — Quake has no sun; this is scaffolding,
+  removed in G6c.
+- **G6a**: per-surface Q2 material table from the `.mat` system
+  (roughness / metalness / specular / base factor), no textures yet.
+
+Frame today: primary rays → ASVGF → compositing → interleave → TAAU → bloom +
+tone mapping → screen. The legacy renderer still renders its own full frame in
+parallel; the bridge only displays the Q2 one.
+
+### Remaining work, in priority order
+
+The order below was revised after G6c. **Point lights come first** (done:
+they are what lights the game today), then **textures**, because the
+remaining half of the lighting work - light polys from emissive surfaces -
+takes its colour from `texture_emissive` and cannot be done correctly
+without them. Indirect lighting comes last, once there is direct light and
+albedo worth bouncing.
+
+#### G6c - lights (point lights done; emissive surfaces blocked on G6b)
+
+Point lights work and are what currently lights the game. Spherical uploads
+(dlights, entity lights, `world_custom_lights.txt`) are packed into
+`DynLightData` and reach the shaders through `ubo.dyn_light_data` /
+`num_dyn_lights`; `light_lists.h` samples them independently of the
+per-cluster polygon lists. Verified on `start` (5 lights) and `e1m1`
+(18 lights): correct path-traced lighting with soft shadows.
+
+Still open in this stage:
+
+- **Emissive surfaces produce no light polys, and the blocker is textures.**
+  There are two independent "this surface emits" mechanisms in the tree:
+  the `@POLY_LIGHT` list in `ovrd/texture_custom_info.txt` (10 curated
+  textures with explicit hex colours, drives `rt_wldlights_tri`) and
+  `is_light` in `ovrd.mat` (51 materials, drives `MATERIAL_FLAG_LIGHT` and
+  `emissive_factor`). The curated list is far too narrow - `start` matches
+  zero surfaces, `e1m1` matches exactly one, and that one is a button, i.e.
+  a brush model rather than static geometry, so it never reaches the
+  triangle array. Q2RTX derives light polys from the **material** flag
+  (`bsp_mesh.c collect_light_polys`), so the port should follow `is_light`.
+  But those materials take their colour from `texture_emissive`, so correct
+  light polys need the texture port first. **G6b now comes before the rest
+  of G6c.**
+- **The 32 point lights are chosen arbitrarily.** `MAX_LIGHT_SOURCES` is
+  saturated and entries are taken in upload order, with no visibility or
+  distance weighting, while `sample_dynamic_lights` picks among them
+  uniformly at random. Expect flicker and popping once things move. Select
+  the best 32 by contribution (intensity / distance squared) instead.
+- **`pt_light_stats` is still 0** and the light stats buffers do not exist.
+- **Spot lights are not mapped.** `RgSphericalLightUploadInfo.normal` marks a
+  one-sided emitter but `DYNLIGHT_SPOT` needs real cone angles in
+  `spot_data`; everything is uploaded as `DYNLIGHT_SPHERE` for now.
+- **Temporary diagnostics to remove**: `Q2LightLog` / `q2light_dump.txt`,
+  `Q2G6Log` / `q2g6_dump.txt`, the surface and custom-info counters in
+  `r_world.c` and `gl_texmgr.c`, and the `q2crash.txt` mirror in `vkpt.cpp`.
+  The widened `catch (std::exception)` in `vkpt.cpp` is NOT temporary - a C
+  API boundary must not let exceptions escape.
+
+#### G6c leftovers (original notes)
+
+
+The Q2 `LightBuffer` is currently empty: `light_polys`, `light_list_offsets`
+and `light_list_lights` are zero-filled and `ubo.num_static_lights` /
+`ubo.num_dyn_lights` are never assigned. This is a format conversion, not new
+engine work — the structures already match one to one:
+
+| Game side (already in this repo) | Q2RTX target |
+|---|---|
+| `RgPolygonalLightUploadInfo` = `{uniqueID, color, positions[3]}` | `LightPolygon` = `{mat3 positions, vec3 color, 2x style_scale}` |
+| `RgSphericalLightUploadInfo` = `{color, position, radius, normal}` | `DynLightData` = `{center, radius, color, type, spot_direction, spot_data}` (normal != 0 gives a spot) |
+| `RT_ClusterLightListsUpload` (prefix-sum offsets + concatenated ids, PVS via `Mod_LeafPVS`) | `light_list_offsets` + `light_list_lights` |
+| `RgVertex.cluster` into `VboPrimitive.cluster` | `TEX_PT_CLUSTER_A`, read by `direct_lighting.rgen` |
+
+Constants already line up: `RT_CLUSTER_MAX_CLUSTERS * RT_CLUSTER_MAX_PER_LIST`
+= 8192 * 64 = 524288 = `MAX_LIGHT_LIST_NODES`.
+
+Notes that decide the implementation:
+
+- World lights must become **light polys, not dyn lights**: `MAX_LIGHT_SOURCES`
+  is 32, which is right for Quake dlights (muzzle flashes, rockets) but
+  hopeless for a whole map. The emissive world triangles live in
+  `rt_wldlights_tri[]` (`Quake/r_world.c`, up to 2048, against
+  `MAX_LIGHT_POLYS` 4096).
+- `RT_USE_SPHERE_INSTEAD_OF_POLY` merges coplanar emissive triangles into
+  sphere lights for the legacy sampler. Q2RTX samples the triangles directly
+  (`spherical_tri_area`, Arvo 1995), so the Q2 path takes the raw triangles.
+  Only the sphere branch currently calls `RT_ClusterLightAdd`, so cluster
+  registration has to follow the triangles.
+- `sample_polygonal_lights` reads the per-cluster light count from
+  **`light_counts_history[frame % LIGHT_COUNT_HISTORY]`**, not from the offsets
+  array. That buffer is currently the 4-byte null buffer, so it must be
+  implemented or no light is ever sampled.
+- `light_stats` (3 buffers, `num_clusters * num_light_polys * 6 * 2` uints,
+  zeroed per frame) drives the adaptive sampler and is **written** by
+  `direct_lighting.rgen`; it is also on the null buffer today. Size it with a
+  cap — the Q2RTX formula is unbounded.
+- Remove the placeholder sun once real lights land.
+
+`light_lists.h` stays verbatim: it already implements sphere and spot lights
+(`compute_dynlight_sphere` / `compute_dynlight_spot`), so Quake point lights
+need no shader change.
+
+#### G6b — textures
+
+Point `GLOBAL_TEXTURES_TEX_ARR` at the image views the existing bindless
+`TextureDescriptors` already maintains, instead of the white placeholder in
+`FramebuffersQ2.cpp`, and write real texture indices into the material entries
+(`entry[0]`/`entry[1]`) in `GeometryQ2.cpp`. Then drop the forced
+`MATERIAL_KIND_REGULAR` and enable WATER / GLASS / LAVA kinds, and the emissive
+factor that currently has no texture to modulate.
+
+#### G6d — per-frame UBO correctness
+
+Small but blocking for temporal quality; see the defect list below.
+
+#### G6e — finish ASVGF
+
+Add `asvgf_gradient_reproject` (trace command buffer, before lighting) and
+`asvgf_gradient_atrous` (7 iterations, inside the filter). See the defect list.
+
+#### G1b — dynamic geometry
+
+Alias models, sprites, particles and beams into the Q2 acceleration structure
+and `InstanceBuffer`; dynamic model lights appended to the light lists per
+frame (Q2RTX `instance_model_lights`).
+
+#### G7 — indirect lighting
+
+`indirect_lighting.rgen` replacing the legacy `TraceQ2Indirect`.
+
+#### Later swaps
+
+`reflect_refract.rgen`, god rays / fog, physical sky, `animate_materials`,
+`instance_geometry` / `normalize_normal_map`.
+
+#### State A — remove the legacy renderer
+
+`PathTracer`, `ASManager`, `Rasterizer`, `Source/Shaders/`, the `RG_*` API.
+
+### Confirmed defects (fix alongside the stages above)
+
+1. **The ASVGF gradient is identically zero — antilag is off.**
+   `asvgf_gradient_img.comp` writes `GRAD_LF_PING` / `GRAD_HF_SPEC_PING`, but
+   `asvgf_temporal.comp` reads the **PONG** images. Only
+   `asvgf_gradient_atrous.comp` moves PING to PONG, and it is never dispatched,
+   so the temporal filter always reads zeros. `asvgf_gradient_reproject.comp`
+   is missing too, and it is what writes `ASVGF_GRAD_SMPL_POS_A` — read by both
+   `path_tracer_rgen.h` and `asvgf_gradient_img.comp`. Invisible today (static
+   scene, one fixed sun); it will show as ghosting the moment lights move.
+2. **TAA history is invalidated every frame.** `GlobalUniformQ2.cpp` hard-sets
+   `prev_taa_output_width/height` to 0 and aliases `invP_prev` to the current
+   `invP`. Q2RTX carries both over from the previous frame (`main.c`
+   `prepare_ubo`).
+3. **Null-buffer bindings.** `LIGHT_STATS_BUFFER`, `LIGHT_COUNTS_HISTORY` and
+   `IQM_MATRIX_BUFFER` point at a 4-byte buffer while `direct_lighting.rgen`
+   writes light stats. Only `robustBufferAccess` is holding this together.
+
+### Verified non-issues (do not chase)
+
+- **LF / a-trous loop order.** `AsvgfLfQ2` runs all 4 LF iterations, then
+  `AsvgfAtrousQ2` runs all 4 HF iterations; Q2RTX interleaves them per
+  iteration. The results are identical: `asvgf_atrous.comp` reads the LF images
+  only at `spec_iteration == 3` (compositing), and `asvgf_lf.comp` iteration 3
+  leaves its result in exactly the PING images that iteration reads.
+- **No separate compositing pass.** Correct — Q2RTX runs `compositing.comp`
+  only when the denoiser is disabled; with `flt_enable` the last a-trous
+  iteration composites into `IMG_ASVGF_COLOR`.
+- **View-matrix convention.** The Q2RTX DoF branch in `primary_rays.rgen`
+  assumes Q2RTX's view convention (view +Z forward), ours is the GL/Vulkan one
+  (+Z backward), which is why `pt_aperture` is forced to 0. The exposure is
+  contained: `invV[0..2]` appears nowhere else in the vendored set. Revisit
+  only when porting DoF or god rays.
 
 ## Shader mapping table
 
@@ -70,7 +299,7 @@ Status legend:
 | `RaygenCommon.h` | `path_tracer_rgen.h` | adapted |
 | `RaygenPrimary.inl` | (inside `path_tracer_rgen.h`) | adapted |
 | `Light.h` | `light_lists.h` | adapted |
-| `Q2LightLists.h` | `light_lists.h` | adapted |
+| `Q2LightLists.h` | `light_lists.h` | adapted (sphere/spot added to the Q2RTX sampler) |
 | `Surface.inl` | `path_tracer_transparency.glsl` | adapted |
 | — | `path_tracer_particle.rahit` | new (Q2RTX) |
 | — | `path_tracer_beam.rahit` / `path_tracer_beam.rint` | new (Q2RTX) |
@@ -126,103 +355,21 @@ Status legend:
 
 - `CmVertexPreprocess.comp` — RTGL geometry preprocessing; Q2RTX does this in
   `instance_geometry.comp` / `normalize_normal_map.comp`.
-- `ShadowMap.vert` ↔ `shadow_map.vert` (renamed, small diff).
+- `ShadowMap.vert` maps to `shadow_map.vert` (renamed, small diff).
 - `GenerateShaders.py` — ours (keep; extended later to build the Q2RTX set).
 - `Build_test.spv` — stale artifact, delete.
 
-## Stage S2 outline (binding layer)
+## Debugging aids
 
-- **S2a (done)**: shader toolchain validated for the Q2RTX set. All 46
-  compilable files in `q2rtx-shaders/` build with `glslc
-  --target-env=vulkan1.2 -DVKPT_SHADER` (Q2RTX compiles them the same way via
-  glslangValidator, see `Q2RTX/cmake/compileShaders.cmake`). The FSR shaders
-  additionally need the `fsr/` include path (vendored: `ffx_a.h`,
-  `ffx_fsr1.h`, AMD MIT). `GenerateShadersQ2RTX.py` (our own tool) compiles
-  the set into `Build/q2rtx/*.spv` with an mtime cache — validation only, the
-  game does not load these shaders yet.
-- **S2b (in progress)**: adopt the dual C++/GLSL headers as the binding
-  contract and rework the C++ side to fill them:
-  - `global_ubo.h` — flat `QVKUniformBuffer_t` of the `UBO_CVAR_LIST` cvars
-    (std140, set = `GLOBAL_UBO_DESC_SET_IDX`, binding 0). C++ side fills it
-    by iterating the same list (Q2RTX main.c does this). Done: `GlobalUniformQ2`.
-  - Instance SSBO — binding 1 (`GLOBAL_INSTANCE_BUFFER_BINDING_IDX`) in the
-    same buffer and descriptor set, offset
-    `align(sizeof(QVKUniformBuffer_t), 256)`, like Q2RTX `uniform_buffer.c`.
-    `InstanceBuffer`/`ModelInstance` layout verified by `check_q2rtx_ubo.py`
-    (C == std140, 1736832 B / 192 B). The data is zeroed until the geometry
-    port feeds real instances. Done: `GlobalUniformQ2`.
-  - `global_textures.h` — `LIST_IMAGES`/`LIST_IMAGES_A_B` define every
-    framebuffer image/texture (format + size) and the global texture array
-    (`GLOBAL_TEXTURES_DESC_SET_IDX`, bindings offset by `BINDING_OFFSET_IMAGES`
-    / `BINDING_OFFSET_TEXTURES`). Done: `FramebuffersQ2`.
-  - `vertex_buffer.h`, `constants.h`, `shader_structs.h` — shared structs.
-    Set 3 (`VERTEX_BUFFER_DESC_SET_IDX`): primitive array (binding 0,
-    `VERTEX_BUFFER_FIRST_MODEL + MAX_MODELS` entries), position / light /
-    light-counts-history / IQM / readback / tonemap / sun-color / light-stats
-    bindings, layout mirroring Q2RTX `vertex_buffer.c`. All bindings point at
-    a 4-byte null buffer until the geometry port feeds data. Done:
-    `VertexBufferQ2`.
-  This replaces `GenerateShaderCommon.py` output (`ShaderCommonC.h` etc.) and
-  reworks `GlobalUniform.cpp`, `Framebuffers.cpp`, `TextureDescriptors.cpp`,
-  `ShaderManager.cpp`, `VertexCollector*`.
-
-## Stage S3 (shader swaps, in progress)
-
-- Q2RTX `.spv` are compiled by `GenerateShadersQ2RTX.py` into
-  `Build/q2rtx/` and packed into `shaders.pkz` under `shaders/q2rtx/...`
-  (`zip_shaders.py` now recurses into subfolders).
-- **First swap (done)**: `checkerboard_interleave.comp` runs every frame on
-  the Q2 descriptor sets via `ShaderSwapQ2` (set 0 = `GlobalUniformQ2`,
-  set 1 = `FramebuffersQ2`; no geometry). Output images (`IMG_FLAT_*`) are
-  not displayed yet - the pass validates the Q2RTX shader pipeline and the
-  UBO/image bindings end to end.
-- **Bloom (done)**: `bloom_downscale.comp` + `bloom_blur.comp` (h + v, push
-  constants per Q2RTX `compute_push_constants`) + `bloom_composite.comp`
-  via `BloomQ2`. `FramebuffersQ2` sampled descriptors now declare GENERAL
-  (Q2RTX keeps every framebuffer image in GENERAL for the whole frame);
-  `GlobalUniformQ2` fills the bloom/taa UBO fields.
-- **Compositing (done)**: `compositing.comp` (denoiser-disabled path) via
-  `CompositingQ2` - combines the lighting channels with the surface
-  parameters into `IMG_ASVGF_COLOR`.
-- **ASVGF temporal (done)**: `asvgf_temporal.comp` via `AsvgfTemporalQ2` -
-  temporal accumulation/filtering of the lighting channels into the history
-  images and the atrous ping-pong buffers (15-pixel groups, no blue noise).
-- **ASVGF gradient image (done)**: `asvgf_gradient_img.comp` via
-  `AsvgfGradientImgQ2` - builds the low-res gradient image (GRAD_DWN res).
-- **ASVGF LF filter (done)**: `asvgf_lf.comp` via `AsvgfLfQ2` - 4 LF wavelet
-  iterations driven by an iteration push constant, ping-ponging the
-  ATROUS_PING/PONG LF images.
-- **Blue noise (done)**: `FramebuffersQ2` now has the
-  `BINDING_OFFSET_BLUE_NOISE` binding, fed from the existing `BlueNoise`
-  texture (Q2RTX-style 256x256 R16 x512 array). This unblocks the remaining
-  set 0+1 shaders that sample `TEX_BLUE_NOISE` (asvgf_atrous, god_rays,
-  tone_mapping_apply).
-- **ASVGF a-trous (done)**: `asvgf_atrous.comp` via `AsvgfAtrousQ2` - 4
-  spatial wavelet iterations, each a pipeline specialized on
-  `spec_iteration` 0..3 (with `spec_enable_lf = 1`); the last iteration
-  also composites into `IMG_ASVGF_COLOR`.
-- **Tone mapping (done)**: `tone_mapping_histogram.comp` +
-  `tone_mapping_curve.comp` + `tone_mapping_apply.comp` (SDR
-  specialization) via `ToneMappingQ2`. First pass using all three Q2RTX
-  descriptor sets; `VertexBufferQ2` gained a real `ToneMappingBuffer`
-  (histogram accumulator + tone curve) for `TONE_MAPPING_BUFFER_BINDING_IDX`.
-- **ASVGF TAA upscale (done)**: `asvgf_taau.comp` via `AsvgfTaaQ2` -
-  temporal anti-aliasing + upscale (flat color/motion + previous TAA frame
-  into `IMG_TAA_OUTPUT`). Uses all three Q2RTX sets; `VertexBufferQ2` gained
-  a real `ReadbackBuffer` for `READBACK_BUFFER_BINDING_IDX` (written by the
-  shader).
-- **Sky buffer resolve (done)**: `sky_buffer_resolve.comp` via
-  `SkyBufferResolveQ2` - converts the fixed-point sun/sky accumulation in
-  `SunColorBuffer` into float values (1x1 dispatch, set 0 + set 1).
-  `VertexBufferQ2` gained a real `SunColorBuffer` bound both as storage
-  (`SUN_COLOR_BUFFER_BINDING_IDX`) and UBO (`SUN_COLOR_UBO_BINDING_IDX`).
-- **Bridge control point (done)**: `BridgeQ2` copies the legacy renderer's
-  HDR result (`FB_IMAGE_INDEX_PRE_FINAL`) into the Q2RTX `IMG_TAA_OUTPUT`,
-  runs the swapped Q2RTX post-processing (bloom + tone mapping), and blits
-  the result back into the legacy `FB_IMAGE_INDEX_FINAL` so it is displayed.
-  This makes the Q2RTX post-processing visible as a reference point. Bloom
-  and tone mapping now run here (not in the pre-Render swap list).
-- Then swap shader files one by one; each swap is a testable step.
+- `rt_q2bridge 1` — show the Q2RTX chain instead of the legacy frame.
+- `rt_q2debug N` - blit an intermediate Q2 image instead of the final one.
+  Viewable (RGBA16F): 0 = TAA_OUTPUT (final), 1 = PT_BASE_COLOR_A (albedo),
+  2 = ASVGF_COLOR (lighting after denoise), 3 = FLAT_COLOR,
+  4 = ASVGF_TAA_A, 7 = ASVGF_TAA_B.
+  **Not viewable**: 5 = PT_COLOR_HF and 6 = ASVGF_ATROUS_PING_HF are
+  `R32_UINT` images holding packed values - blitting them to the RGBA8 final
+  image yields meaningless colours. Judge lighting with 2 or 0.
+  8 = PT_METALLIC_A is `R8G8` (red = metallic, green = roughness).
 
 ## License notes
 
