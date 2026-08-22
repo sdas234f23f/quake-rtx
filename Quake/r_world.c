@@ -1501,43 +1501,6 @@ static void RT_FlushBatch (rt_cb_context_t *cbx, const rt_uploadsurf_state_t *s,
 	// lights.
 	const qboolean is_poly_light = diffuse_tex && diffuse_tex->rtcustomtextype == RT_CUSTOMTEXTUREINFO_TYPE_POLY_LIGHT;
 
-	// TEMP G6c diagnostic: counts are approximate (this runs on all six world
-	// tasks), which is fine - we only need to know whether surfaces arrive
-	// here at all, whether they carry a diffuse texture, and what rtname the
-	// custom-info matcher is comparing against.
-	{
-		static int seen = 0, withtex = 0, polylit = 0, named = 0;
-		seen++;
-		if (diffuse_tex)
-			withtex++;
-		if (is_poly_light)
-			polylit++;
-
-		if (diffuse_tex && named < 10)
-		{
-			named++;
-			FILE *f = fopen ("q2light_game.txt", "a");
-			if (f)
-			{
-				fprintf (f, "Q2LIGHT/SURF: rtname='%s' name='%s' type=%d static=%d",
-				         diffuse_tex->rtname, diffuse_tex->name,
-				         diffuse_tex->rtcustomtextype, is_static_geom ? 1 : 0);
-				fputc ('\n', f);
-				fclose (f);
-			}
-		}
-		if ((seen % 5000) == 0)
-		{
-			FILE *f = fopen ("q2light_game.txt", "a");
-			if (f)
-			{
-				fprintf (f, "Q2LIGHT/SURF: seen=%d withtex=%d polylit=%d", seen, withtex, polylit);
-				fputc ('\n', f);
-				fclose (f);
-			}
-		}
-	}
-
 	if (is_poly_light)
 	{
 		const RgTransform transf = RT_GetBrushModelMatrix (s->ent);
@@ -2579,31 +2542,6 @@ void RT_UploadAllWorldModelLights (void)
 	// finished collecting.
 	PolyToSphericalLights (rt_wldlights_tri, RT_WorldLightTriCount (), false);
 #endif
-
-	// TEMP G6c diagnostic: how many emissive world surfaces the draw pass
-	// collected, and which representation is being uploaded. Sampled
-	// periodically because the first frames are still the menu.
-	{
-		static int calls = 0;
-		static int logged = 0;
-		calls++;
-		if (logged < 20 && (calls <= 3 || (calls % 120) == 0))
-		{
-			logged++;
-			FILE *f = fopen ("q2light_game.txt", "a");
-			if (f)
-			{
-				fprintf (f, "Q2LIGHT/GAME: call=%d q2lights=%d tri=%d sph=%d custom=%d worldmodel=%d leafs=%d",
-				         calls, CVAR_TO_BOOL (rt_q2lights) ? 1 : 0,
-				         RT_WorldLightTriCount (), rt_wldlights_sph_count,
-				         rt_customlights_curr_count,
-				         cl.worldmodel ? 1 : 0,
-				         cl.worldmodel ? cl.worldmodel->numleafs : -1);
-				fputc ('\n', f);
-				fclose (f);
-			}
-		}
-	}
 
 	// debug view: wireframe of the generated light sources
 	if (CVAR_TO_BOOL (rt_debug_lights))

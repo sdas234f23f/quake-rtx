@@ -510,24 +510,6 @@ static void RT_ParseTextureCustomInfos (void)
 		rt_texturecustominfos_count = -1;
 	}
 
-	// TEMP G6c diagnostic: distinguishes "file never loaded / parse failed"
-	// from "loaded, but no texture name matched" (remove with the dumps).
-	{
-		FILE *f = fopen ("q2light_game.txt", "a");
-		if (f)
-		{
-			fprintf (f, "Q2LIGHT/TEX: parsed custom info entries=%d", rt_texturecustominfos_count);
-			fputc ('\n', f);
-			for (int i = 0; i < rt_texturecustominfos_count && i < 6; i++)
-			{
-				fprintf (f, "Q2LIGHT/TEX:   entry[%d] rtname='%s' type=%d", i,
-				         rt_texturecustominfos[i].rtname, rt_texturecustominfos[i].type);
-				fputc ('\n', f);
-			}
-			fclose (f);
-		}
-	}
-
 	Mem_Free (data);
 }
 

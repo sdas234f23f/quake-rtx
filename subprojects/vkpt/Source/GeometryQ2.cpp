@@ -12,9 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdarg>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 
 using namespace vkpt;
@@ -104,61 +102,6 @@ static uint32_t PackHalf2x16(float a, float b)
            (static_cast<uint32_t>(FloatToHalf(b)) << 16);
 }
 
-// TEMP G6 diagnostic: IEEE-754 half to float (remove with the dumps).
-static float HalfToFloat(uint16_t h)
-{
-    const uint32_t sign = static_cast<uint32_t>(h & 0x8000u) << 16;
-    uint32_t exp = (h >> 10) & 0x1fu;
-    uint32_t mant = h & 0x3ffu;
-    uint32_t bits;
-    if (exp == 0)
-    {
-        if (mant == 0)
-        {
-            bits = sign;
-        }
-        else
-        {
-            exp = 1;
-            while ((mant & 0x400u) == 0)
-            {
-                mant <<= 1;
-                exp--;
-            }
-            mant &= 0x3ffu;
-            bits = sign | (exp + (127 - 15)) << 23 | mant << 13;
-        }
-    }
-    else if (exp == 0x1f)
-    {
-        bits = sign | 0x7f800000u | mant << 13;
-    }
-    else
-    {
-        bits = sign | (exp + (127 - 15)) << 23 | mant << 13;
-    }
-    float f;
-    std::memcpy(&f, &bits, sizeof(f));
-    return f;
-}
-
-// TEMP G6 diagnostic: append a line to q2g6_dump.txt in the working dir
-// (remove with the dumps). Works regardless of stdout redirection.
-static void Q2G6Log(const char *fmt, ...)
-{
-    FILE *f = std::fopen("q2g6_dump.txt", "a");
-    if (!f)
-    {
-        return;
-    }
-    va_list args;
-    va_start(args, fmt);
-    std::vfprintf(f, fmt, args);
-    va_end(args);
-    std::fputc('\n', f);
-    std::fclose(f);
-}
-
 GeometryQ2::GeometryQ2(VkDevice _device,
                        std::shared_ptr<MemoryAllocator> _allocator,
                        std::shared_ptr<CommandBufferManager> _cmdManager,
@@ -190,10 +133,6 @@ GeometryQ2::~GeometryQ2()
 
 void GeometryQ2::BeginStaticUpload()
 {
-    // TEMP G6c breadcrumb: marks the start of a static scene upload, so a
-    // crash during map load can be placed before or after this point.
-    Q2G6Log("Q2G6: BeginStaticUpload");
-
     world.primitives.clear();
     world.positions.clear();
     worldPrimCount = 0;
@@ -216,16 +155,6 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
 
     const uint32_t triCount = uploadInfo.indexCount ? uploadInfo.indexCount / 3
                                                     : uploadInfo.vertexCount / 3;
-
-    // TEMP G6 diagnostic: dump the upload defaults once.
-    static int firstUploadDumped = 0;
-    if (firstUploadDumped < 3)
-    {
-        Q2G6Log("Q2G6: upload defaults rough=%.3f metal=%.3f pQ2Material=%p",
-                uploadInfo.defaultRoughness, uploadInfo.defaultMetallicity,
-                static_cast<const void *>(uploadInfo.pQ2Material));
-        firstUploadDumped++;
-    }
 
     worldPrimCount += triCount;
     world.primitives.reserve(world.primitives.size() + triCount * sizeof(VboPrimitive));
@@ -448,55 +377,6 @@ void GeometryQ2::SubmitStatic()
     if (materialCount > 0)
     {
         vertexBufferQ2->SetQ2Materials(materialTable.data(), materialCount);
-    }
-
-    // TEMP G6 diagnostic: dump the collected table (remove after G6a debug).
-    {
-        Q2G6Log("Q2G6: SubmitStatic primCount=%u materialCount=%u",
-                worldPrimCount, materialCount);
-        for (uint32_t i = 0; i < materialCount && i < 4; i++)
-        {
-            const uint32_t *e = materialTable.data() + i * MATERIAL_UINTS;
-            Q2G6Log("Q2G6:   mat[%u] = %08x %08x %08x %08x %08x %08x "
-                    "(rough=%f metal=%f emissive=%f spec=%f base=%f)",
-                    i, e[0], e[1], e[2], e[3], e[4], e[5],
-                    HalfToFloat(static_cast<uint16_t>(e[2] >> 16)),
-                    HalfToFloat(static_cast<uint16_t>(e[3] & 0xffff)),
-                    HalfToFloat(static_cast<uint16_t>(e[3] >> 16)),
-                    HalfToFloat(static_cast<uint16_t>(e[5] & 0xffff)),
-                    HalfToFloat(static_cast<uint16_t>(e[5] >> 16)));
-        }
-        // TEMP G6c diagnostic: cluster validity of the world primitives.
-        // direct_lighting.rgen indexes the per-cluster light lists with
-        // this value, so an all-zero or out-of-range range means no light.
-        if (!world.primitives.empty())
-        {
-            const VboPrimitive *prims =
-                reinterpret_cast<const VboPrimitive *>(world.primitives.data());
-            const size_t n = world.primitives.size() / sizeof(VboPrimitive);
-            int32_t minC = INT32_MAX;
-            int32_t maxC = INT32_MIN;
-            size_t zero = 0;
-            for (size_t i = 0; i < n; i++)
-            {
-                const int32_t c = prims[i].cluster;
-                minC = (c < minC) ? c : minC;
-                maxC = (c > maxC) ? c : maxC;
-                if (c == 0)
-                {
-                    zero++;
-                }
-            }
-            Q2G6Log("Q2G6:   cluster range [%d..%d], zero=%zu of %zu prims",
-                    minC, maxC, zero, n);
-        }
-
-        const VboPrimitive *first =
-            reinterpret_cast<const VboPrimitive *>(world.primitives.data());
-        if (!world.primitives.empty())
-        {
-            Q2G6Log("Q2G6:   first prim material_id = %08x", first->material_id);
-        }
     }
 
     if (!hasWorldData || world.primitives.empty())

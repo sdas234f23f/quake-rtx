@@ -78,8 +78,6 @@ private:
     // which only the .cpp needs to see).
     std::vector<uint8_t> dynLights;
     uint32_t dynLightCount;
-    // TEMP G6c diagnostic: point lights offered before the cap.
-    uint32_t sphericalOffered;
 
     // Unique ID -> index into lightPolys.
     rgl::unordered_map<uint64_t, uint32_t> idToIndex;

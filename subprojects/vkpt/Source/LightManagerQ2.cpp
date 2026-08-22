@@ -9,47 +9,9 @@
 // DynLightData + MAX_LIGHT_SOURCES for the point-light path.
 #include "../q2rtx-shaders/global_ubo.h"
 
-#include <cstdarg>
-#include <cstdio>
 #include <cstring>
 
 using namespace vkpt;
-
-// TEMP G6c diagnostic: append a line to q2light_dump.txt in the working
-// directory (remove once the light port is verified).
-static void Q2LightLog(const char *fmt, ...)
-{
-    FILE *f = std::fopen("q2light_dump.txt", "a");
-    if (!f)
-    {
-        return;
-    }
-    va_list args;
-    va_start(args, fmt);
-    std::vfprintf(f, fmt, args);
-    va_end(args);
-    std::fputc(0x0a, f);
-    std::fclose(f);
-}
-
-// TEMP G6c diagnostic: the first frames are still the menu (no world, no
-// lights), so sample periodically instead of only at startup.
-static bool Q2LightShouldLog()
-{
-    static uint32_t calls = 0;
-    static uint32_t logged = 0;
-    calls++;
-    if (logged >= 20)
-    {
-        return false;
-    }
-    if (calls <= 3 || (calls % 120) == 0)
-    {
-        logged++;
-        return true;
-    }
-    return false;
-}
 
 // Floats per LightPolygon entry in the light_polys array.
 static constexpr uint32_t LIGHT_POLY_FLOATS = LIGHT_POLY_VEC4S * 4;
@@ -59,7 +21,6 @@ LightManagerQ2::LightManagerQ2(std::shared_ptr<VertexBufferQ2> _vertexBufferQ2)
     vertexBufferQ2(std::move(_vertexBufferQ2)),
     lightPolyCount(0),
     dynLightCount(0),
-    sphericalOffered(0),
     uploadedClusterCount(0),
     uploadedTotalCount(0)
 {
@@ -74,7 +35,6 @@ void LightManagerQ2::PrepareForFrame()
     lightPolyCount = 0;
     dynLights.clear();
     dynLightCount = 0;
-    sphericalOffered = 0;
     idToIndex.clear();
 
     uploadedClusterCount = 0;
@@ -120,19 +80,6 @@ void LightManagerQ2::AddPolygonalLight(const RgPolygonalLightUploadInfo &info)
 
 void LightManagerQ2::AddSphericalLight(const RgSphericalLightUploadInfo &info)
 {
-    // TEMP G6c diagnostic: how many point lights the game actually offers per
-    // frame, versus the MAX_LIGHT_SOURCES slots we can hold, and what they
-    // look like. Counted before the cap.
-    sphericalOffered++;
-    if (sphericalOffered <= 8 && Q2LightShouldLog())
-    {
-        Q2LightLog("Q2LIGHT: sph[%u] pos=(%.0f %.0f %.0f) r=%.1f color=(%.3f %.3f %.3f)",
-                   sphericalOffered - 1,
-                   info.position.data[0], info.position.data[1], info.position.data[2],
-                   info.radius,
-                   info.color.data[0], info.color.data[1], info.color.data[2]);
-    }
-
     if (dynLightCount >= MAX_LIGHT_SOURCES)
     {
         return;
@@ -179,14 +126,6 @@ void LightManagerQ2::SetClusterLightLists(uint32_t numClusters, const uint32_t *
         return;
     }
 
-    // TEMP G6c breadcrumb: the assigns below allocate from caller-supplied
-    // counts, so log them before trusting either.
-    if (Q2LightShouldLog())
-    {
-        Q2LightLog("Q2LIGHT: SetClusterLightLists numClusters=%u totalCount=%u polysSoFar=%u",
-                   numClusters, totalCount, lightPolyCount);
-    }
-
     uploadedClusterCount = numClusters;
     uploadedTotalCount = totalCount;
 
@@ -202,16 +141,6 @@ void LightManagerQ2::Submit(uint32_t frameId)
     {
         // No lights this frame: every cluster must still see an empty range,
         // otherwise the shader reads stale offsets from the previous map.
-        // TEMP G6c diagnostic.
-        {
-            if (Q2LightShouldLog())
-            {
-                Q2LightLog("Q2LIGHT: EMPTY polys=%u clusters=%u dynLights=%u/%u frameId=%u",
-                           lightPolyCount, uploadedClusterCount, dynLightCount,
-                           sphericalOffered, frameId);
-            }
-        }
-
         resolvedOffsets.assign(2, 0);
         resolvedCounts.assign(1, 0);
         vertexBufferQ2->SetClusterLightLists(1, resolvedOffsets.data(), nullptr, 0);
@@ -259,40 +188,6 @@ void LightManagerQ2::Submit(uint32_t frameId)
         total += written;
     }
     resolvedOffsets.push_back(total);
-
-    // TEMP G6c diagnostic.
-    {
-        if (Q2LightShouldLog())
-        {
-            uint32_t unresolved = 0;
-            for (uint32_t i = 0; i < uploadedLightIds.size(); i++)
-            {
-                if (idToIndex.find(uploadedLightIds[i]) == idToIndex.end())
-                {
-                    unresolved++;
-                }
-            }
-            uint32_t nonEmpty = 0;
-            for (uint32_t c = 0; c < resolvedCounts.size(); c++)
-            {
-                if (resolvedCounts[c] > 0)
-                {
-                    nonEmpty++;
-                }
-            }
-            Q2LightLog("Q2LIGHT: polys=%u clusters=%u uploadedIds=%u resolvedTotal=%u "
-                       "unresolvedIds=%u clustersWithLights=%u frameId=%u",
-                       lightPolyCount, uploadedClusterCount,
-                       (uint32_t)uploadedLightIds.size(), total, unresolved,
-                       nonEmpty, frameId);
-            if (lightPolyCount > 0)
-            {
-                Q2LightLog("Q2LIGHT:   poly0 p0=(%.1f %.1f %.1f) color=(%.3f %.3f %.3f)",
-                           lightPolys[0], lightPolys[1], lightPolys[2],
-                           lightPolys[3], lightPolys[7], lightPolys[11]);
-            }
-        }
-    }
 
     vertexBufferQ2->SetClusterLightLists(uploadedClusterCount, resolvedOffsets.data(),
                                          resolvedIndices.data(), total);

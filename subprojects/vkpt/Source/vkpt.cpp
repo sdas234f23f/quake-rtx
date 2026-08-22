@@ -21,8 +21,6 @@
 #include "VulkanDevice.h"
 #include "RgException.h"
 
-#include <cstdio>
-
 using namespace vkpt;
 
 constexpr uint32_t MAX_DEVICE_COUNT = 8;
@@ -47,15 +45,6 @@ static VulkanDevice &GetDevice(RgInstance rgInstance)
 
 static void TryPrintError(RgInstance rgInstance, const char *pMessage)
 {
-    // TEMP G6c diagnostic: the console message is easy to lose if the game
-    // dies right after, so mirror it to a file (remove with the other dumps).
-    if (FILE *f = std::fopen("q2crash.txt", "a"))
-    {
-        std::fprintf(f, "%s", pMessage ? pMessage : "(null)");
-        std::fputc('\n', f);
-        std::fclose(f);
-    }
-
     auto it = G_DEVICES.find(rgInstance);
 
     if (it != G_DEVICES.end())

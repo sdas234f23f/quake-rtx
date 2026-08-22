@@ -138,11 +138,10 @@ Still open in this stage:
 - **Spot lights are not mapped.** `RgSphericalLightUploadInfo.normal` marks a
   one-sided emitter but `DYNLIGHT_SPOT` needs real cone angles in
   `spot_data`; everything is uploaded as `DYNLIGHT_SPHERE` for now.
-- **Temporary diagnostics to remove**: `Q2LightLog` / `q2light_dump.txt`,
-  `Q2G6Log` / `q2g6_dump.txt`, the surface and custom-info counters in
-  `r_world.c` and `gl_texmgr.c`, and the `q2crash.txt` mirror in `vkpt.cpp`.
-  The widened `catch (std::exception)` in `vkpt.cpp` is NOT temporary - a C
-  API boundary must not let exceptions escape.
+- ~~Temporary diagnostics~~ removed: `Q2LightLog`, `Q2G6Log`, the surface
+  and custom-info counters in `r_world.c` and `gl_texmgr.c`, and the
+  `q2crash.txt` mirror in `vkpt.cpp`. The widened `catch (std::exception)`
+  in `vkpt.cpp` stays - a C API boundary must not let exceptions escape.
 
 #### G6c leftovers (original notes)
 
