@@ -991,6 +991,157 @@ static void RT_AcidColor(void)
 }
 
 /*
+==================
+RT_RayIntersectsAABB
+
+Slab test against an axis-aligned box. Returns the entry distance along `dir`
+(assumed normalized) or -1 when there is no hit.
+==================
+*/
+static float RT_RayIntersectsAABB (const vec3_t org, const vec3_t dir, const vec3_t mins, const vec3_t maxs)
+{
+	float tmin = 0.0f;
+	float tmax = 1e30f;
+
+	for (int i = 0; i < 3; i++)
+	{
+		if (fabs (dir[i]) < 1e-6f)
+		{
+			if (org[i] < mins[i] || org[i] > maxs[i])
+				return -1.0f;
+			continue;
+		}
+
+		float inv = 1.0f / dir[i];
+		float t1 = (mins[i] - org[i]) * inv;
+		float t2 = (maxs[i] - org[i]) * inv;
+
+		if (t1 > t2)
+		{
+			float tmp = t1;
+			t1 = t2;
+			t2 = tmp;
+		}
+
+		tmin = q_max (tmin, t1);
+		tmax = q_min (tmax, t2);
+
+		if (tmin > tmax)
+			return -1.0f;
+	}
+
+	return tmin;
+}
+
+/*
+==================
+RT_TexInfo
+
+Debug helper: aim the crosshair at a surface and run this command to log the
+entity/model/skin/texture underneath. Bound to "t" by default.
+==================
+*/
+static void RT_TexInfo (void)
+{
+	if (!CVAR_TO_BOOL (rt_renderer))
+	{
+		Con_Printf ("rt_texinfo: only available with rt_renderer 1\n");
+		return;
+	}
+
+	vec3_t forward, right, up;
+	AngleVectors (r_refdef.viewangles, forward, right, up);
+
+	Con_Printf ("rt_texinfo: org %.1f %.1f %.1f dir %.3f %.3f %.3f\n",
+		r_refdef.vieworg[0], r_refdef.vieworg[1], r_refdef.vieworg[2],
+		forward[0], forward[1], forward[2]);
+
+	// find the closest alias model under the crosshair (radius cube test)
+	float best = 1e30f;
+	entity_t *hitent = NULL;
+	for (int i = 1; i < cl.num_entities; i++)
+	{
+		entity_t *e = &cl.entities[i];
+		if (!e->model || e->model->needload || e->model->type != mod_alias)
+			continue;
+		if (!e->model->rtvertices || !e->model->rtindices)
+			continue;
+
+		vec3_t mins, maxs;
+		VectorAdd (e->origin, e->model->rmins, mins);
+		VectorAdd (e->origin, e->model->rmaxs, maxs);
+
+		float t = RT_RayIntersectsAABB (r_refdef.vieworg, forward, mins, maxs);
+		if (t >= 0.0f && t < best)
+		{
+			best = t;
+			hitent = e;
+		}
+	}
+
+	if (hitent)
+	{
+		entity_t *e = hitent;
+		aliashdr_t *hdr = (aliashdr_t *)Mod_Extradata_CheckSkin (e->model, e->skinnum);
+		int skinnum = e->skinnum;
+		if (hdr && (skinnum < 0 || skinnum >= hdr->numskins))
+			skinnum = 0;
+
+		Con_Printf ("rt_texinfo: entity %d model '%s' skin %d frame %d\n",
+			(int)(hitent - cl.entities), e->model->name, e->skinnum, e->frame);
+
+		if (hdr)
+		{
+			int anim = (int)(cl.time * 10) & 3;
+			gltexture_t *tx = hdr->gltextures[skinnum][anim];
+			if (tx)
+			{
+				Con_Printf ("  texture '%s' source '%s' rtname '%s'\n",
+					tx->name, tx->source_file, tx->rtname);
+				Con_Printf ("  emissive=%d islight=%d custom=%d mat=%u avg_emis=%.3f %.3f %.3f\n",
+					!!(tx->flags & TEXPREF_RT_IS_EMISSIVE),
+					tx->rtq2islight,
+					tx->rtcustomtextype,
+					(unsigned)tx->rtmaterial,
+					tx->rtq2emissivecolor[0], tx->rtq2emissivecolor[1], tx->rtq2emissivecolor[2]);
+			}
+			else
+			{
+				Con_Printf ("  texture: (none)\n");
+			}
+		}
+		return;
+	}
+
+	// no alias model under the crosshair -- report the world surface we hit
+	if (!cl.worldmodel)
+	{
+		Con_Printf ("rt_texinfo: no world model loaded\n");
+		return;
+	}
+
+	vec3_t end;
+	VectorMA (r_refdef.vieworg, 8192.0f, forward, end);
+
+	trace_t trace;
+	memset (&trace, 0, sizeof (trace));
+	SV_RecursiveHullCheck (cl.worldmodel->hulls, r_refdef.vieworg, end, &trace, CONTENTMASK_ANYSOLID);
+
+	if (trace.fraction < 1.0f)
+	{
+		Con_Printf ("rt_texinfo: world hit frac %.3f pos %.1f %.1f %.1f normal %.3f %.3f %.3f dist %.1f\n",
+			trace.fraction,
+			trace.endpos[0], trace.endpos[1], trace.endpos[2],
+			trace.plane.normal[0], trace.plane.normal[1], trace.plane.normal[2],
+			trace.plane.dist);
+	}
+	else
+	{
+		Con_Printf ("rt_texinfo: no hit\n");
+	}
+}
+
+/*
 ===================
 RT_SunPreset_f
 
@@ -1308,6 +1459,7 @@ static void RT_GL_InitInstance (void)
 	Cmd_AddCommand ("rt_water_color", RT_WaterColor);
 	Cmd_AddCommand ("rt_water_acidcolor", RT_AcidColor);
 	Cmd_AddCommand ("fog", RT_Fog_Cmd);
+	Cmd_AddCommand ("rt_texinfo", RT_TexInfo);
 
 	// identity view matrix until the game-side port fills it in R_RenderView
 	{
