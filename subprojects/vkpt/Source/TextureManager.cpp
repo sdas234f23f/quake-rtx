@@ -769,6 +769,11 @@ VkDescriptorSetLayout TextureManager::GetDescSetLayout() const
     return textureDesc->GetDescSetLayout();
 }
 
+uint32_t TextureManager::GetTextureDescriptorCount() const
+{
+    return static_cast<uint32_t>(textures.size());
+}
+
 void TextureManager::Subscribe(std::shared_ptr<IMaterialDependency> subscriber)
 {
     subscribers.emplace_back(subscriber);

@@ -659,10 +659,8 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
     const uint32_t frameIndex = currentFrameState.GetFrameIndex();
 
     
-    bool mipLodBiasUpdated = worldSamplerManager->TryChangeMipLodBias(frameIndex, renderResolution.GetMipLodBias());
     const RgFloat2D jitter = { uniform->GetData()->jitterX, uniform->GetData()->jitterY };
 
-    textureManager->SubmitDescriptors(frameIndex, drawInfo.pTexturesParams, mipLodBiasUpdated);
     cubemapManager->SubmitDescriptors(frameIndex);
 
 
@@ -1137,6 +1135,12 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
     {
         FillUniform(uniform->GetData(), *drawInfo);
 
+        const uint32_t frameIndex = currentFrameState.GetFrameIndex();
+        const bool mipLodBiasUpdated =
+            worldSamplerManager->TryChangeMipLodBias(frameIndex, renderResolution.GetMipLodBias());
+        textureManager->SubmitDescriptors(frameIndex, drawInfo->pTexturesParams,
+                                          mipLodBiasUpdated);
+
         // G6c: select this view's point lights, then resolve polygonal lights
         // and per-cluster lists before the Q2 UBO is filled.
         lightManagerQ2->Submit(uniform->GetData()->frameId,
@@ -1147,8 +1151,11 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
 
         // Q2RTX-convention UBO and framebuffers, filled alongside the legacy
         // ones and consumed by the Q2RTX chain below (PORTING.md, S2b/G4).
-        uniformQ2->Upload(cmd, currentFrameState.GetFrameIndex(), uniform->GetData());
+        uniformQ2->Upload(cmd, frameIndex, uniform->GetData());
         framebuffersQ2->Create(renderResolution.Width(), renderResolution.Height(), 1);
+        framebuffersQ2->PrepareForFrame(frameIndex,
+                                        textureManager->GetDescSet(frameIndex),
+                                        textureManager->GetTextureDescriptorCount());
 
         // Q2RTX keeps all framebuffer images in GENERAL; transition them
         // once right after (re)creation so the ray tracing imageStore /

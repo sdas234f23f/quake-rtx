@@ -77,6 +77,7 @@ public:
 
     VkDescriptorSet GetDescSet(uint32_t frameIndex) const;
     VkDescriptorSetLayout GetDescSetLayout() const;
+    uint32_t GetTextureDescriptorCount() const;
 
     // Subscribe to material change event.
     // shared_ptr will be transformed to weak_ptr

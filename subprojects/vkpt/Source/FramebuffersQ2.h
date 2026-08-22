@@ -47,6 +47,11 @@ public:
     // BINDING_OFFSET_BLUE_NOISE (owned by BlueNoise; only the view is kept).
     void SetBlueNoiseImageView(VkImageView blueNoiseView);
 
+    // Selects the descriptor set for this frame and copies the initialized
+    // legacy bindless texture range into the Q2RTX global texture array.
+    void PrepareForFrame(uint32_t frameIndex, VkDescriptorSet textureDescSet,
+                         uint32_t textureDescriptorCount);
+
     VkDescriptorSet GetDescSet() const;
     VkDescriptorSetLayout GetDescSetLayout() const;
     VkImage GetImage(int index) const;
@@ -68,7 +73,8 @@ private:
     void CreatePlaceholders();
     void DestroyPlaceholders();
     void CreateDescriptors();
-    void UpdateDescriptors();
+    void UpdateDescriptors(VkDescriptorSet targetSet);
+    void UpdateAllDescriptors();
 
 private:
     VkDevice device;
@@ -98,7 +104,8 @@ private:
 
     VkDescriptorPool      descPool;
     VkDescriptorSetLayout descSetLayout;
-    VkDescriptorSet       descSet;
+    VkDescriptorSet       descSets[MAX_FRAMES_IN_FLIGHT];
+    uint32_t              activeFrameIndex;
 
     // Set when the images are (re)created; cleared by TransitionImagesToGeneral.
     bool needsImageTransition;

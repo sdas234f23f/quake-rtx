@@ -70,8 +70,9 @@ rebuild most of it every frame from RG_* upload calls. See section 4.
 | framebuffer images (`LIST_IMAGES`) | same names/formats | `FramebuffersQ2` |
 
 Q2RTX ping-pongs the `_A`/`_B` images by swapping descriptor sets each frame
-(`qvk_get_current_desc_set_textures`). `FramebuffersQ2` uses a **single**
-descriptor set, so `IMG_*_A` and `TEX_*_A` always resolve to the same image.
+(`qvk_get_current_desc_set_textures`). `FramebuffersQ2` uses per-frame
+descriptor sets for safe bindless texture updates, but `IMG_*_A` and
+`TEX_*_A` still resolve to the same image in both sets.
 Reads and writes stay consistent within a frame, but there is no cross-frame
 ping-pong; anything that genuinely needs last frame's image will need the swap.
 
@@ -85,7 +86,7 @@ Identical to Q2RTX; the set indices come from the vendored `constants.h`.
 |---|---|---|---|
 | 0 | `RAY_GEN_DESC_SET_IDX` | `ASManagerQ2` | TLAS + texel buffers |
 | 1 | `GLOBAL_UBO_DESC_SET_IDX` | `GlobalUniformQ2` | binding 0 UBO, binding 1 instance SSBO |
-| 2 | `GLOBAL_TEXTURES_DESC_SET_IDX` | `FramebuffersQ2` | global texture array, framebuffer images/textures, blue noise |
+| 2 | `GLOBAL_TEXTURES_DESC_SET_IDX` | `FramebuffersQ2` | per-frame sets: bindless `TextureManager` range, framebuffer images/textures, blue noise |
 | 3 | `VERTEX_BUFFER_DESC_SET_IDX` | `VertexBufferQ2` | primitives, positions, light buffer, light counts history, IQM, readback, tone mapping, sun color, light stats |
 
 Compute passes that need only sets 0-1 bind a two-set layout; the ray tracing

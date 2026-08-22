@@ -7,7 +7,9 @@
 // match NUM_GLOBAL_TEXTURES (checked inside the header).
 #define MAX_RIMAGES 8192
 #include "../q2rtx-shaders/global_textures.h"
+#include "Generated/ShaderCommonC.h"
 
+#include <algorithm>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -51,7 +53,8 @@ FramebuffersQ2::FramebuffersQ2(VkDevice _device,
     placeholderStorageView(VK_NULL_HANDLE),
     descPool(VK_NULL_HANDLE),
     descSetLayout(VK_NULL_HANDLE),
-    descSet(VK_NULL_HANDLE),
+    descSets{},
+    activeFrameIndex(0),
     needsImageTransition(true)
 {
     // Value-initialize: DestroyImages() runs before the first Create() and
@@ -125,7 +128,7 @@ void FramebuffersQ2::Create(uint32_t _width, uint32_t _height, uint32_t _deviceC
     CreateImages();
     CreateWhiteTexture();
 
-    UpdateDescriptors();
+    UpdateAllDescriptors();
 }
 
 bool FramebuffersQ2::TakeImageTransition()
@@ -481,15 +484,16 @@ void FramebuffersQ2::CreateDescriptors()
 
     VkDescriptorPoolSize poolSizes[2] = {};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = NUM_GLOBAL_TEXTURES + NUM_IMAGES + 1 + 10; // + blue noise + sky/terrain
+    poolSizes[0].descriptorCount =
+        (NUM_GLOBAL_TEXTURES + NUM_IMAGES + 1 + 10) * MAX_FRAMES_IN_FLIGHT;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[1].descriptorCount = NUM_IMAGES + 1; // + IMG_PHYSICAL_SKY
+    poolSizes[1].descriptorCount = (NUM_IMAGES + 1) * MAX_FRAMES_IN_FLIGHT;
 
     VkDescriptorPoolCreateInfo poolInfo = {};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = 2;
     poolInfo.pPoolSizes = poolSizes;
-    poolInfo.maxSets = 1;
+    poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT;
 
     r = vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool);
     VK_CHECKERROR(r);
@@ -497,14 +501,20 @@ void FramebuffersQ2::CreateDescriptors()
     VkDescriptorSetAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &descSetLayout;
+    VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
+    for (VkDescriptorSetLayout &layout : layouts)
+    {
+        layout = descSetLayout;
+    }
 
-    r = vkAllocateDescriptorSets(device, &allocInfo, &descSet);
+    allocInfo.descriptorSetCount = MAX_FRAMES_IN_FLIGHT;
+    allocInfo.pSetLayouts = layouts;
+
+    r = vkAllocateDescriptorSets(device, &allocInfo, descSets);
     VK_CHECKERROR(r);
 }
 
-void FramebuffersQ2::UpdateDescriptors()
+void FramebuffersQ2::UpdateDescriptors(VkDescriptorSet targetSet)
 {
     std::vector<VkWriteDescriptorSet> writes;
     // One VkDescriptorImageInfo per written descriptor. The vector is
@@ -520,7 +530,7 @@ void FramebuffersQ2::UpdateDescriptors()
 
         VkWriteDescriptorSet write = {};
         write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = descSet;
+        write.dstSet = targetSet;
         write.dstBinding = binding;
         write.dstArrayElement = 0;
         write.descriptorCount = 1;
@@ -544,7 +554,7 @@ void FramebuffersQ2::UpdateDescriptors()
 
         VkWriteDescriptorSet write = {};
         write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = descSet;
+        write.dstSet = targetSet;
         write.dstBinding = GLOBAL_TEXTURES_TEX_ARR_BINDING_IDX;
         write.dstArrayElement = 0;
         write.descriptorCount = NUM_GLOBAL_TEXTURES;
@@ -646,16 +656,56 @@ void FramebuffersQ2::UpdateDescriptors()
     vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
+void FramebuffersQ2::UpdateAllDescriptors()
+{
+    for (VkDescriptorSet set : descSets)
+    {
+        UpdateDescriptors(set);
+    }
+}
+
 void FramebuffersQ2::SetBlueNoiseImageView(VkImageView view)
 {
     blueNoiseImageView = view;
-    // The descriptor set already exists; re-write the blue noise binding.
-    UpdateDescriptors();
+    // Images and the white fallback are created on the first sized Create().
+    if (whiteImageView != VK_NULL_HANDLE)
+    {
+        UpdateAllDescriptors();
+    }
+}
+
+void FramebuffersQ2::PrepareForFrame(uint32_t frameIndex, VkDescriptorSet textureDescSet,
+                                     uint32_t textureDescriptorCount)
+{
+    if (frameIndex >= MAX_FRAMES_IN_FLIGHT || textureDescSet == VK_NULL_HANDLE)
+    {
+        return;
+    }
+
+    activeFrameIndex = frameIndex;
+    const uint32_t copyCount = std::min(textureDescriptorCount,
+                                        static_cast<uint32_t>(NUM_GLOBAL_TEXTURES));
+    if (copyCount == 0)
+    {
+        return;
+    }
+
+    VkCopyDescriptorSet copy = {};
+    copy.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
+    copy.srcSet = textureDescSet;
+    copy.srcBinding = BINDING_TEXTURES;
+    copy.srcArrayElement = 0;
+    copy.dstSet = descSets[frameIndex];
+    copy.dstBinding = GLOBAL_TEXTURES_TEX_ARR_BINDING_IDX;
+    copy.dstArrayElement = 0;
+    copy.descriptorCount = copyCount;
+
+    vkUpdateDescriptorSets(device, 0, nullptr, 1, &copy);
 }
 
 VkDescriptorSet FramebuffersQ2::GetDescSet() const
 {
-    return descSet;
+    return descSets[activeFrameIndex];
 }
 
 VkDescriptorSetLayout FramebuffersQ2::GetDescSetLayout() const

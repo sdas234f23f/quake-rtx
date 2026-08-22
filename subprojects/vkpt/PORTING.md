@@ -195,6 +195,12 @@ Point `GLOBAL_TEXTURES_TEX_ARR` at the image views the existing bindless
 `MATERIAL_KIND_REGULAR` and enable WATER / GLASS / LAVA kinds, and the emissive
 factor that currently has no texture to modulate.
 
+The descriptor half is complete: `FramebuffersQ2` owns one set per frame,
+copies the initialized runtime-sized range from `TextureManager` after its
+descriptor submission, and leaves the unused tail of Q2RTX's 8192-entry array
+on the white fallback. Material-table indices and the legacy RME-to-Q2 sampling
+adapter are the next increment.
+
 #### G6d — per-frame UBO correctness
 
 Small but blocking for temporal quality; see the defect list below.
