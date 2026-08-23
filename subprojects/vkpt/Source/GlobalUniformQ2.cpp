@@ -75,6 +75,16 @@ void FillUniformBuffer(QVKUniformBuffer_t &ubo, const ShGlobalUniform &src,
     ubo.first_person_model = 1;
     ubo.environment_type   = 0;
 
+    // env_map() multiplies the world-space direction by this matrix before
+    // sampling/looking up the environment. memset above leaves it a zero
+    // matrix, which collapses the direction to zero and makes the procedural
+    // sky fallback (and any future physical sky) return a constant color.
+    // Identity leaves directions unchanged, matching Q2RTX with no sky rotation.
+    ubo.environment_rotation_matrix[0][0] = 1.0f;
+    ubo.environment_rotation_matrix[1][1] = 1.0f;
+    ubo.environment_rotation_matrix[2][2] = 1.0f;
+    ubo.environment_rotation_matrix[3][3] = 1.0f;
+
     // Tiling water normal map sampled by get_water_normal() (water.glsl) to
     // animate the water surface. global_ubo.h declares this in
     // GLOBAL_UBO_VAR_LIST (not UBO_CVAR_LIST), so it has no cvars default and

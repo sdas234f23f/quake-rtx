@@ -119,6 +119,23 @@ env_map(vec3 direction, bool remove_sun)
         float avg = (envmap.x + envmap.y + envmap.z) / 3.0;
         envmap = mix(envmap, avg.xxx, global_ubo.pt_envmap_desaturate) * global_ubo.pt_envmap_brightness;
     }
+    else
+    {
+        // No sky pass is ported yet: environment_type is neither DYNAMIC nor
+        // STATIC (GlobalUniformQ2.cpp leaves it 0). Returning black here makes
+        // the sky background and every reflection (water, chrome, glass) black,
+        // which is why water looked opaque and dark. Fall back to a simple
+        // Z-up vertical gradient so reflections read as a plausible sky until
+        // the real physical sky replaces this. The real branch does not apply
+        // pt_env_scale here (callers do it where needed), so neither does this.
+        float up = clamp(direction.z, -1.0, 1.0);
+        vec3 zenith = vec3(0.10, 0.28, 0.55);
+        vec3 horizon = vec3(0.62, 0.72, 0.85);
+        vec3 ground = vec3(0.03, 0.04, 0.05);
+        envmap = up >= 0.0
+            ? mix(horizon, zenith, smoothstep(0.0, 0.6, up))
+            : mix(horizon, ground, smoothstep(0.0, 0.6, -up));
+    }
 	return envmap;
 }
 
