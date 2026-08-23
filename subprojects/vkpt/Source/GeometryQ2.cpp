@@ -162,6 +162,7 @@ GeometryQ2::GeometryQ2(VkDevice _device,
   vertexBufferQ2(std::move(_vertexBufferQ2)),
   uploadFence(VK_NULL_HANDLE),
   worldPrimCount(0),
+  transparentPrimCount(0),
   hasWorldData(false),
   materialCount(0),
   uploadedMaterialCount(0),
@@ -193,7 +194,10 @@ void GeometryQ2::BeginStaticUpload()
 {
     world.primitives.clear();
     world.positions.clear();
+    worldTransparent.primitives.clear();
+    worldTransparent.positions.clear();
     worldPrimCount = 0;
+    transparentPrimCount = 0;
     hasWorldData = false;
 
     // Materials are collected per level load, entries uploaded in
@@ -219,8 +223,33 @@ void GeometryQ2::AddStaticGeometry(const RgGeometryUploadInfo &uploadInfo)
         return;
     }
 
-    const uint32_t triCount = AppendGeometry(uploadInfo, world, 0, nullptr, nullptr);
-    worldPrimCount += triCount;
+    // Water/slime/glass surfaces must live in a separate BLAS with
+    // AS_FLAG_TRANSPARENT: primary rays hit them, but shadow rays
+    // (AS_FLAG_OPAQUE only) and first-bounce reflection rays skip them, and
+    // the physical water branch in primary_rays.rgen + reflect_refract.rgen
+    // shades them instead of sampling the old scrolling WAL albedo. Lava
+    // stays opaque (emissive, no refraction), matching Q2RTX bsp_mesh.c. Sky
+    // never reaches this path (drawn separately). The kind is the same
+    // MapMaterialKind ordinal AppendGeometry ORs into material_id.
+    const RgQ2Material *qm = uploadInfo.pQ2Material;
+    const uint32_t kind = MapMaterialKind(qm ? qm->kind : /*RT_MAT_KIND_REGULAR*/ 1);
+    const bool isTransparent =
+        kind == MATERIAL_KIND_WATER ||
+        kind == MATERIAL_KIND_SLIME ||
+        kind == MATERIAL_KIND_GLASS ||
+        kind == MATERIAL_KIND_TRANSPARENT ||
+        kind == MATERIAL_KIND_TRANSP_MODEL;
+
+    WorldData &target = isTransparent ? worldTransparent : world;
+    const uint32_t triCount = AppendGeometry(uploadInfo, target, 0, nullptr, nullptr);
+    if (isTransparent)
+    {
+        transparentPrimCount += triCount;
+    }
+    else
+    {
+        worldPrimCount += triCount;
+    }
     hasWorldData = true;
 }
 
@@ -827,13 +856,18 @@ void GeometryQ2::SubmitStatic()
         return;
     }
 
-    UploadToDevice(std::move(world));
+    UploadToDevice(std::move(world), std::move(worldTransparent));
     hasWorldData = false;
 }
 
 uint32_t GeometryQ2::GetWorldPrimitiveCount() const
 {
     return worldPrimCount;
+}
+
+uint32_t GeometryQ2::GetTransparentPrimitiveCount() const
+{
+    return transparentPrimCount;
 }
 
 VkBuffer GeometryQ2::GetWorldBuffer() const
@@ -848,23 +882,46 @@ VkDeviceAddress GeometryQ2::GetWorldBufferAddress() const
 
 VkDeviceSize GeometryQ2::GetWorldPositionOffset() const
 {
-    return worldPrimCount * sizeof(VboPrimitive);
+    // Primitives (opaque then transparent) are followed by the opaque BLAS
+    // source positions.
+    return (static_cast<VkDeviceSize>(worldPrimCount) + transparentPrimCount) *
+           sizeof(VboPrimitive);
 }
 
-void GeometryQ2::UploadToDevice(WorldData &&data)
+VkDeviceSize GeometryQ2::GetTransparentPositionOffset() const
 {
-    const VkDeviceSize primSize = data.primitives.size();
-    const VkDeviceSize posSize = data.positions.size();
+    // Transparent positions follow the opaque positions: 3 vertices per
+    // triangle, 3 floats per vertex.
+    return GetWorldPositionOffset() +
+           static_cast<VkDeviceSize>(worldPrimCount) * 3 * 3 * sizeof(float);
+}
 
-    if (primSize == 0)
+void GeometryQ2::UploadToDevice(WorldData &&opaque, WorldData &&transparent)
+{
+    const VkDeviceSize opaquePrimSize = opaque.primitives.size();
+    const VkDeviceSize transparentPrimSize = transparent.primitives.size();
+    const VkDeviceSize opaquePosSize = opaque.positions.size();
+    const VkDeviceSize transparentPosSize = transparent.positions.size();
+
+    if (opaquePrimSize == 0)
     {
         return;
     }
 
-    // One buffer holds the primitive array followed by the BLAS source
-    // positions, exactly like Q2RTX's world buffer (buf_world).
+    // One buffer holds, in order: the opaque primitive array, the transparent
+    // primitive array, the opaque BLAS source positions, then the transparent
+    // BLAS source positions. This extends Q2RTX's buf_world layout with a
+    // second primitive range so water/slime/glass share the VERTEX_BUFFER_WORLD
+    // primitive buffer while living in a separate AS_FLAG_TRANSPARENT BLAS
+    // (the transparent TLAS instance uses a non-zero
+    // tlas_instance_prim_offsets entry, not a second vertex buffer).
+    const VkDeviceSize totalPrimSize = opaquePrimSize + transparentPrimSize;
+    const VkDeviceSize opaquePosOffset = totalPrimSize;
+    const VkDeviceSize transparentPosOffset = totalPrimSize + opaquePosSize;
+    const VkDeviceSize totalSize = totalPrimSize + opaquePosSize + transparentPosSize;
+
     worldBuffer.Destroy();
-    worldBuffer.Init(allocator, primSize + posSize,
+    worldBuffer.Init(allocator, totalSize,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                          VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
@@ -874,20 +931,30 @@ void GeometryQ2::UploadToDevice(WorldData &&data)
 
     // Host-visible staging copy.
     Buffer staging;
-    staging.Init(allocator, primSize + posSize,
+    staging.Init(allocator, totalSize,
                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                  "Q2RTX world geometry staging");
 
-    void *mapped = staging.Map();
-    std::memcpy(mapped, data.primitives.data(), primSize);
-    std::memcpy(static_cast<uint8_t *>(mapped) + primSize, data.positions.data(), posSize);
+    uint8_t *mapped = static_cast<uint8_t *>(staging.Map());
+    std::memcpy(mapped, opaque.primitives.data(), opaquePrimSize);
+    if (transparentPrimSize > 0)
+    {
+        std::memcpy(mapped + opaquePrimSize, transparent.primitives.data(),
+                    transparentPrimSize);
+    }
+    std::memcpy(mapped + opaquePosOffset, opaque.positions.data(), opaquePosSize);
+    if (transparentPosSize > 0)
+    {
+        std::memcpy(mapped + transparentPosOffset, transparent.positions.data(),
+                    transparentPosSize);
+    }
     staging.Unmap();
 
     VkCommandBuffer cmd = cmdManager->StartGraphicsCmd();
 
     VkBufferCopy copyInfo = {};
-    copyInfo.size = primSize + posSize;
+    copyInfo.size = totalSize;
     vkCmdCopyBuffer(cmd, staging.GetBuffer(), worldBuffer.GetBuffer(), 1, &copyInfo);
 
     VkBufferMemoryBarrier barrier = {};
@@ -899,7 +966,7 @@ void GeometryQ2::UploadToDevice(WorldData &&data)
                             VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
     barrier.buffer = worldBuffer.GetBuffer();
     barrier.offset = 0;
-    barrier.size = primSize + posSize;
+    barrier.size = totalSize;
 
     vkCmdPipelineBarrier(cmd,
                          VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -912,19 +979,21 @@ void GeometryQ2::UploadToDevice(WorldData &&data)
 
     staging.Destroy();
 
-    // Point the descriptor set at the real world buffer: binding 0 element
-    // VERTEX_BUFFER_WORLD = the primitive array, binding 1 = the positions.
+    // Point descriptor set 3's binding 0 element VERTEX_BUFFER_WORLD at the
+    // combined primitive array (opaque + transparent); binding 1 keeps the
+    // opaque BLAS source positions (only read by the unused instanced
+    // store_triangle path).
     const VkDescriptorBufferInfo primInfo =
     {
         .buffer = worldBuffer.GetBuffer(),
         .offset = 0,
-        .range = primSize,
+        .range = totalPrimSize,
     };
     const VkDescriptorBufferInfo posInfo =
     {
         .buffer = worldBuffer.GetBuffer(),
-        .offset = primSize,
-        .range = posSize,
+        .offset = opaquePosOffset,
+        .range = opaquePosSize,
     };
 
     vertexBufferQ2->SetWorldBufferInfo(primInfo, posInfo);

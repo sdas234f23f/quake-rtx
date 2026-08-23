@@ -84,10 +84,13 @@ public:
     void SubmitStatic();
 
     uint32_t GetWorldPrimitiveCount() const;
+    uint32_t GetTransparentPrimitiveCount() const;
     VkBuffer GetWorldBuffer() const;
     VkDeviceAddress GetWorldBufferAddress() const;
-    // Offset of the BLAS source positions inside the world buffer.
+    // Offset of the opaque BLAS source positions inside the world buffer.
     VkDeviceSize GetWorldPositionOffset() const;
+    // Offset of the transparent (water/slime/glass) BLAS source positions.
+    VkDeviceSize GetTransparentPositionOffset() const;
 
     // Stage G1b: dynamic aggregate geometry, rebuilt every frame.
 
@@ -121,7 +124,7 @@ private:
         std::vector<uint8_t> positions;
     };
 
-    void UploadToDevice(WorldData &&data);
+    void UploadToDevice(WorldData &&opaque, WorldData &&transparent);
 
     // Shared per-triangle conversion used by both the static and dynamic
     // paths: transforms uploadInfo's triangles to world space, resolves /
@@ -146,9 +149,11 @@ private:
     std::shared_ptr<VertexBufferQ2> vertexBufferQ2;
 
     WorldData world;
+    WorldData worldTransparent;
     Buffer worldBuffer;
     VkFence uploadFence;
     uint32_t worldPrimCount;
+    uint32_t transparentPrimCount;
     bool hasWorldData;
 
     // Q2 material table entries collected from RgGeometryUploadInfo::

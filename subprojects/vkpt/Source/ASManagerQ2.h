@@ -79,6 +79,10 @@ public:
 
 private:
     void BuildBLAS(VkCommandBuffer cmd);
+    void BuildTransparentBLAS(VkCommandBuffer cmd);
+    void BuildStaticWorldBLAS(VkCommandBuffer cmd, BLASComponent &target,
+                              VkDeviceAddress positionAddress,
+                              uint32_t primCount);
     void BuildDynamicBLAS(VkCommandBuffer cmd, uint32_t frameIndex,
                           GeometryQ2::DynamicGeometryCategory category,
                           const GeometryQ2::DynamicGeometryRange &range);
@@ -102,6 +106,10 @@ private:
     // One BLAS over the whole static world geometry (non-indexed positions),
     // built once at level load.
     BLASComponent blas;
+    // A second static-world BLAS holding only water/slime/glass triangles,
+    // referenced by a TLAS instance with AS_FLAG_TRANSPARENT so primary rays
+    // hit it while shadow/first-bounce-reflection rays skip it.
+    BLASComponent transparentBlas;
     // One dynamic BLAS per visibility category and frame slot. The BLAS source
     // ranges share GeometryQ2's aggregate buffer, but separate TLAS instances
     // are required because Vulkan instance masks match any overlapping bit.
@@ -138,6 +146,7 @@ private:
 
     VkFence fence;
     uint32_t worldPrimCount;
+    uint32_t transparentPrimCount;
     bool submitted;
 };
 

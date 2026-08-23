@@ -112,6 +112,9 @@ ASManagerQ2::ASManagerQ2(VkDevice _device,
   blas(_device, static_cast<VertexCollectorFilterTypeFlags>(
                     VertexCollectorFilterTypeFlagBits::CF_STATIC_NON_MOVABLE |
                     VertexCollectorFilterTypeFlagBits::PT_OPAQUE)),
+  transparentBlas(_device, static_cast<VertexCollectorFilterTypeFlags>(
+                    VertexCollectorFilterTypeFlagBits::CF_STATIC_NON_MOVABLE |
+                    VertexCollectorFilterTypeFlagBits::PT_OPAQUE)),
   tlasEffects(_device, "Q2RTX effects TLAS"),
   descPool(VK_NULL_HANDLE),
   descSetLayout(VK_NULL_HANDLE),
@@ -119,6 +122,7 @@ ASManagerQ2::ASManagerQ2(VkDevice _device,
   activeFrameIndex(0),
   fence(VK_NULL_HANDLE),
   worldPrimCount(0),
+  transparentPrimCount(0),
   submitted(false)
 {
     const uint32_t scratchAlignment = physDevice->GetASProperties().minAccelerationStructureScratchOffsetAlignment;
@@ -162,6 +166,7 @@ ASManagerQ2::ASManagerQ2(VkDevice _device,
 ASManagerQ2::~ASManagerQ2()
 {
     blas.Destroy();
+    transparentBlas.Destroy();
     for (auto &tlas : tlasGeometry)
     {
         if (tlas)
@@ -206,6 +211,7 @@ ASManagerQ2::~ASManagerQ2()
 void ASManagerQ2::SubmitStatic()
 {
     worldPrimCount = geometryQ2->GetWorldPrimitiveCount();
+    transparentPrimCount = geometryQ2->GetTransparentPrimitiveCount();
 
     if (worldPrimCount == 0 || !geometryQ2->GetWorldBuffer())
     {
@@ -216,6 +222,10 @@ void ASManagerQ2::SubmitStatic()
 
     staticScratchBuffer->Reset();
     BuildBLAS(cmd);
+    if (transparentPrimCount > 0)
+    {
+        BuildTransparentBLAS(cmd);
+    }
     BuildTLAS(cmd);
 
     cmdManager->Submit(cmd, fence);
@@ -243,42 +253,58 @@ void ASManagerQ2::SubmitStatic()
     submitted = true;
 }
 
-void ASManagerQ2::BuildBLAS(VkCommandBuffer cmd)
+void ASManagerQ2::BuildStaticWorldBLAS(VkCommandBuffer cmd, BLASComponent &target,
+                                       VkDeviceAddress positionAddress,
+                                       uint32_t primCount)
 {
-    const VkDeviceSize posOffset = geometryQ2->GetWorldPositionOffset();
-
     VkAccelerationStructureGeometryKHR geom = {};
     geom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
     geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
     geom.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
     // Non-indexed: positions are 3 floats per vertex, one triangle = 3 verts.
     geom.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-    geom.geometry.triangles.vertexData.deviceAddress = geometryQ2->GetWorldBufferAddress() + posOffset;
+    geom.geometry.triangles.vertexData.deviceAddress = positionAddress;
     geom.geometry.triangles.vertexStride = 3 * sizeof(float);
-    geom.geometry.triangles.maxVertex = worldPrimCount * 3 - 1;
+    geom.geometry.triangles.maxVertex = primCount * 3 - 1;
     geom.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
 
-    const uint32_t primCount = worldPrimCount;
     VkAccelerationStructureBuildSizesInfoKHR buildSizes =
         staticAsBuilder->GetBottomBuildSizes(1, &geom, &primCount, true);
 
-    blas.RecreateIfNotValid(buildSizes, allocator);
-    if (!blas.IsValid(buildSizes))
+    target.RecreateIfNotValid(buildSizes, allocator);
+    if (!target.IsValid(buildSizes))
     {
         return;
     }
 
     VkAccelerationStructureBuildRangeInfoKHR range = {};
-    range.primitiveCount = worldPrimCount;
+    range.primitiveCount = primCount;
     range.firstVertex = 0;
     range.primitiveOffset = 0;
     range.transformOffset = 0;
 
     assert(staticAsBuilder->IsEmpty());
-    staticAsBuilder->AddBLAS(blas.GetAS(), 1, &geom, &range,
+    staticAsBuilder->AddBLAS(target.GetAS(), 1, &geom, &range,
                              buildSizes, true, false, false);
     staticAsBuilder->BuildBottomLevel(cmd);
     Utils::ASBuildToBuildMemoryBarrier(cmd);
+}
+
+void ASManagerQ2::BuildBLAS(VkCommandBuffer cmd)
+{
+    BuildStaticWorldBLAS(
+        cmd, blas,
+        geometryQ2->GetWorldBufferAddress() + geometryQ2->GetWorldPositionOffset(),
+        worldPrimCount);
+}
+
+void ASManagerQ2::BuildTransparentBLAS(VkCommandBuffer cmd)
+{
+    BuildStaticWorldBLAS(
+        cmd, transparentBlas,
+        geometryQ2->GetWorldBufferAddress() +
+            geometryQ2->GetTransparentPositionOffset(),
+        transparentPrimCount);
 }
 
 void ASManagerQ2::BuildDynamicBLAS(
@@ -370,6 +396,10 @@ void ASManagerQ2::BuildTLAS(VkCommandBuffer cmd)
 void ASManagerQ2::BuildCombinedTLAS(VkCommandBuffer cmd, uint32_t frameIndex)
 {
     uint32_t instCount = 1;
+    if (transparentPrimCount > 0)
+    {
+        instCount++;
+    }
     for (GeometryQ2::DynamicGeometryCategory category : DYNAMIC_CATEGORIES)
     {
         if (geometryQ2->GetDynamicRange(frameIndex, category).primitiveCount > 0)
@@ -380,7 +410,7 @@ void ASManagerQ2::BuildCombinedTLAS(VkCommandBuffer cmd, uint32_t frameIndex)
 
     Buffer &instBuf = instanceBuffer[frameIndex];
     constexpr VkDeviceSize maxInstanceBufferSize =
-        (1 + GeometryQ2::DYNAMIC_GEOMETRY_CATEGORY_COUNT) *
+        (2 + GeometryQ2::DYNAMIC_GEOMETRY_CATEGORY_COUNT) *
         sizeof(QvkGeometryInstance);
     if (!instBuf.IsInitted() || instBuf.GetSize() < maxInstanceBufferSize)
     {
@@ -411,6 +441,22 @@ void ASManagerQ2::BuildCombinedTLAS(VkCommandBuffer cmd, uint32_t frameIndex)
     worldInst.acceleration_structure = blas.GetASAddress();
 
     uint32_t instanceIndex = 1;
+
+    // Transparent (water/slime/glass) world instance: same VERTEX_BUFFER_WORLD
+    // primitive buffer as the opaque world, but tlas_instance_prim_offsets
+    // points past the opaque range, and AS_FLAG_TRANSPARENT keeps it out of
+    // shadow and first-bounce reflection rays.
+    if (transparentPrimCount > 0)
+    {
+        QvkGeometryInstance &transparentInst = instances[instanceIndex++];
+        memcpy(transparentInst.transform, IDENTITY_12, sizeof(IDENTITY_12));
+        transparentInst.instance_id = VERTEX_BUFFER_WORLD;
+        transparentInst.mask = AS_FLAG_TRANSPARENT;
+        transparentInst.instance_offset = SBTO_MASKED;
+        transparentInst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        transparentInst.acceleration_structure = transparentBlas.GetASAddress();
+    }
+
     for (GeometryQ2::DynamicGeometryCategory category : DYNAMIC_CATEGORIES)
     {
         const GeometryQ2::DynamicGeometryRange range =
@@ -556,12 +602,23 @@ void ASManagerQ2::FillInstanceBuffer(uint32_t frameIndex)
     mi.render_buffer_idx = VERTEX_BUFFER_WORLD;
     mi.render_prim_offset = 0;
 
-    // Instance 0 is the static world. Dynamic instances follow in the same
-    // category order BuildCombinedTLAS uses, skipping empty ranges.
+    // Instance 0 is the static world. The transparent world instance (when
+    // present) and dynamic instances follow in the same order
+    // BuildCombinedTLAS uses, skipping empty ranges.
     inst.tlas_instance_prim_offsets[0] = 0;
     inst.tlas_instance_model_indices[0] = -1;
 
     uint32_t instanceIndex = 1;
+    if (transparentPrimCount > 0)
+    {
+        // Same VERTEX_BUFFER_WORLD buffer, prim offset just past the opaque
+        // range; -1 model index means the hit shader reads
+        // tlas_instance_prim_offsets directly instead of model_instances.
+        inst.tlas_instance_prim_offsets[instanceIndex] = worldPrimCount;
+        inst.tlas_instance_model_indices[instanceIndex] = -1;
+        instanceIndex++;
+    }
+
     for (GeometryQ2::DynamicGeometryCategory category : DYNAMIC_CATEGORIES)
     {
         const GeometryQ2::DynamicGeometryRange range =
