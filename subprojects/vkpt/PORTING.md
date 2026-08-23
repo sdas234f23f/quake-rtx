@@ -275,6 +275,15 @@ The water normal map itself (`water_normal_texture`) lives in
 (flat white, no waves). It is now assigned explicitly from
 `TextureManager::GetWaterNormalTextureIndex()`.
 
+Forcing `alpha = 1.0` alone did not stop the scrolling WAL from showing through:
+`get_material()` in `path_tracer_rgen.h` still sampled the WAL into `base_color`
+and, through `sample_emissive_texture()`, tinted the fullbright liquid lightmap
+by the same WAL as emission. Both leak into the primary G-buffer and the
+transparent/emissive accumulation, layering the opaque Quake 1 surface over the
+refracted Q2RTX water. `get_material()` now zeros `base_color` and `emissive`
+for `is_water`/`is_slime`, leaving only the physical refract/reflect color from
+`waterColorAndDensity`/`acidColorAndDensity`.
+
 Lava (`SURF_DRAWLAVA`) is intentionally **not** handled yet: there is no
 `is_lava` field on `rt_uploadsurf_state_t`, and the vendored vkpt engine has no
 `RG_GEOMETRY_PASS_THROUGH_TYPE_LAVA_*` nor `GEOM_INST_FLAG_MEDIA_TYPE_LAVA`
