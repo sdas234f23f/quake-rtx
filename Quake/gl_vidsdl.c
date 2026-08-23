@@ -4426,7 +4426,10 @@ void RT_GL_BeginRenderingTask (void *unused)
 		if (!warned_null_instance)
 		{
 			warned_null_instance = true;
-			Con_Printf ("RT: rgStartFrame called with NULL instance handle\n");
+			Con_Printf ("RT: rt_renderer is enabled but the RT instance was never initialized.\n"
+						"    This means rt_renderer changed after video init. It is now locked at\n"
+						"    startup, so delete rt_renderer from config.cfg and relaunch with\n"
+						"    +rt_renderer 1 (or +rt_renderer 0).\n");
 		}
 	}
 
@@ -6292,6 +6295,12 @@ void VID_Init (void)
 		R_CreatePaletteOctreeBuffers (palette_octree_colors, NUM_PALETTE_OCTREE_COLORS, palette_octree_nodes, NUM_PALETTE_OCTREE_NODES);
 	}
 	// GL_CreateRenderResources ();
+
+	// The renderer backend (RT vs native) is chosen exactly once here at video
+	// init and cannot be changed at runtime. Lock rt_renderer so that config.cfg
+	// (re-executed later via quake.rc) cannot flip it after the instance was
+	// already created -- that mismatch previously crashed with RG_WRONG_INSTANCE.
+	Cvar_LockVar ("rt_renderer");
 
 	// johnfitz -- removed code creating "glquake" subdirectory
 
