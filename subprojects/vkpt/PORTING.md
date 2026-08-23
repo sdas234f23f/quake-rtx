@@ -260,6 +260,12 @@ over: animated water normals (`get_water_normal` + `global_ubo.time`),
 refraction (`PT_REFRACT` SBT from `RG_GEOMETRY_PASS_THROUGH_TYPE_*_REFLECT_
 REFRACT`), caustics, and underwater fog.
 
+The water normal map itself (`water_normal_texture`) lives in
+`GLOBAL_UBO_VAR_LIST`, not `UBO_CVAR_LIST`, so the cvar-default fill in
+`GlobalUniformQ2::FillUniformBuffer` never assigned it and it stayed `0`
+(flat white, no waves). It is now assigned explicitly from
+`TextureManager::GetWaterNormalTextureIndex()`.
+
 Lava (`SURF_DRAWLAVA`) is intentionally **not** handled yet: there is no
 `is_lava` field on `rt_uploadsurf_state_t`, and the vendored vkpt engine has no
 `RG_GEOMETRY_PASS_THROUGH_TYPE_LAVA_*` nor `GEOM_INST_FLAG_MEDIA_TYPE_LAVA`
@@ -521,8 +527,12 @@ Status legend:
   default in `default.cfg`; run `bind t rt_texinfo` once if your `config.cfg`
   predates it) to log what is underneath. Alias models report model name, skin,
   texture name, source file, `rtname`, emissive/light flags and material handle;
-  the world reports the impact point and surface normal. Useful for flagging
-  surfaces whose diffuse/emissive textures do not render.
+  brush models (health/ammo pickups, doors, plats) and the static world are
+  ray-traced to resolve the hit `msurface_t`'s texture (`name`, `source_file`,
+  `rtname`, emissive/light/material, plus the fullbright layer). Every line is
+  also appended to `q2rt_texinfo_dbg.txt` in the working directory, so T-key
+  output is captured without `-condebug`. Useful for flagging surfaces whose
+  diffuse/emissive textures do not render.
 - `rt_q2bridge 1` — show the Q2RTX chain instead of the legacy frame.
 - `rt_q2debug N` - blit an intermediate Q2 image instead of the final one.
   Viewable (RGBA16F): 0 = TAA_OUTPUT (final), 1 = PT_BASE_COLOR_A (albedo),
