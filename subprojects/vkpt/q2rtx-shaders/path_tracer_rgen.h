@@ -1043,13 +1043,17 @@ get_material(
 	base_color = image1.rgb * minfo.base_factor;
 	base_color = clamp(base_color, vec3(0), vec3(1));
 
-	// Quake 1 liquid surfaces carry their scrolling WAL albedo as the base
-	// texture, but the Q2RTX refraction path treats water/slime as transparent
-	// media whose color comes from the waterColorAndDensity / acidColorAndDensity
-	// uniforms plus extinction. Neutralize the surface albedo here so the opaque
-	// WAL never leaks into the primary G-buffer or reflected/refracted hits.
-	if(is_water(triangle.material_id) || is_slime(triangle.material_id))
-		base_color = vec3(0);
+	// Quake 1 liquid surfaces carry their scrolling, opaque WAL as the base
+	// texture. Q2RTX renders water/slime as transparent media: the refracted
+	// ray is tinted by extinction(), and the surface itself should carry only a
+	// subtle liquid tint (Q2RTX uses a dedicated water texture here; vkquake-rt
+	// uses rt_water_color / rt_acid_color). Zeroing the albedo left the water
+	// black, and the raw WAL made it opaque, so substitute a fixed translucent
+	// tint instead: clear blue for water, green for slime.
+	if(is_water(triangle.material_id))
+		base_color = vec3(0.25, 0.50, 0.65);
+	else if(is_slime(triangle.material_id))
+		base_color = vec3(0.30, 0.50, 0.15);
 
 	normal = geo_normal;
 	metallic = 0;
