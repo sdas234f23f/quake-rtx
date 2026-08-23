@@ -235,8 +235,8 @@ system.
 
 #### G6f — water / liquid material kinds
 
-Water, slime, and lava surfaces now carry the real Q2RTX material kind instead
-of the forced `MATERIAL_KIND_REGULAR`:
+Water and slime surfaces now carry the real Q2RTX material kind instead of the
+forced `MATERIAL_KIND_REGULAR`:
 
 - `GeometryQ2::AppendGeometry` maps the game's `RT_MAT_KIND_*` ordinal
   (`Quake/rt_material.h`) to the Q2RTX `MATERIAL_KIND_*` nibble via an explicit
@@ -259,6 +259,13 @@ vendored `water.glsl` / `path_tracer_rgen.h` / `reflect_refract.rgen` take
 over: animated water normals (`get_water_normal` + `global_ubo.time`),
 refraction (`PT_REFRACT` SBT from `RG_GEOMETRY_PASS_THROUGH_TYPE_*_REFLECT_
 REFRACT`), caustics, and underwater fog.
+
+Lava (`SURF_DRAWLAVA`) is intentionally **not** handled yet: there is no
+`is_lava` field on `rt_uploadsurf_state_t`, and the vendored vkpt engine has no
+`RG_GEOMETRY_PASS_THROUGH_TYPE_LAVA_*` nor `GEOM_INST_FLAG_MEDIA_TYPE_LAVA`
+(only WATER/GLASS/ACID), so lava surfaces currently fall through to the regular
+opaque path. Adding lava needs a new pass-through enum value, a new media-type
+flag, `Media.h` handling, and a shader regeneration — tracked as a follow-up.
 
 #### G6d — per-frame UBO correctness
 
