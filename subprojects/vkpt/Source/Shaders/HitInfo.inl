@@ -84,16 +84,6 @@ vec3 processAlbedo(uint geometryInstanceFlags, const vec2 texCoords[3], const uv
     // if no albedo textures, use primary color 
     dst = mix(materialColors[0].rgb, dst, float(hasAnyAlbedoTexture));
 
-    // Quake 1 water/slime surfaces carry the opaque scrolling WAL as their
-    // albedo texture, but the RTX renderer treats them as transparent media
-    // (refraction + extinction). Their surface albedo must not tint the final
-    // composite; the media color comes from waterColorAndDensity extinction
-    // applied to the refracted path instead (Q2RTX behavior).
-    if ((geometryInstanceFlags & (GEOM_INST_FLAG_MEDIA_TYPE_WATER | GEOM_INST_FLAG_MEDIA_TYPE_ACID)) != 0)
-    {
-        dst = vec3(0.0);
-    }
-
     return clamp(dst, vec3(0), vec3(1));
 }
 

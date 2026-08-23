@@ -121,6 +121,7 @@ static ShaderModuleDefinition G_SHADERS[] =
     {"Q2PathTracerSpriteRahit",     "q2rtx/path_tracer_sprite.rahit.spv"  },
     {"Q2PathTracerBeamRahit",       "q2rtx/path_tracer_beam.rahit.spv"    },
     {"Q2PathTracerBeamRint",        "q2rtx/path_tracer_beam.rint.spv"     },
+    {"Q2ReflectRefract",            "q2rtx/reflect_refract.rgen.spv"      },
     {"Q2DirectLighting",            "q2rtx/direct_lighting.rgen.spv"      },
 };
 

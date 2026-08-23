@@ -767,7 +767,22 @@ uint32_t GeometryQ2::AppendGeometry(const RgGeometryUploadInfo &uploadInfo,
 
         prim.cluster = static_cast<int32_t>(uploadInfo.pVertices[idx[0]].cluster);
 
-        const float alpha = uploadInfo.layerColors[0].data[3];
+        float alpha = uploadInfo.layerColors[0].data[3];
+        // Quake 1 uploads liquid surfaces with the r_wateralpha family of
+        // cvars (< 1), which lands in alpha here. Q2RTX instead uploads
+        // water/slime/lava as fully opaque (bsp_mesh.c: only
+        // MATERIAL_KIND_TRANSPARENT gets a fractional alpha) and defers all
+        // liquid shading to the physical water branch in primary_rays.rgen +
+        // reflect_refract.rgen. A sub-1 alpha would trip the translucent split
+        // in primary_rays.rgen and let the old scrolling WAL albedo leak
+        // through the refracted water. Force liquid kinds to alpha 1.0.
+        const uint32_t kind = materialId & MATERIAL_KIND_MASK;
+        if (kind == MATERIAL_KIND_WATER ||
+            kind == MATERIAL_KIND_SLIME ||
+            kind == MATERIAL_KIND_LAVA)
+        {
+            alpha = 1.0f;
+        }
         const float primitiveEmissive =
             rmeTexture != EMPTY_TEXTURE_INDEX ? 1.0f : uploadInfo.defaultEmission;
         prim.emissive_and_alpha = PackHalf2x16(primitiveEmissive, alpha);

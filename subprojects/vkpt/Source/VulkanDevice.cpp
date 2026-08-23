@@ -1207,6 +1207,9 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
                                  0, 1, &barrier, 0, nullptr, 0, nullptr);
         }
         pathTracerQ2->DispatchPrimaryRays(cmd, renderResolution.Width(), renderResolution.Height());
+        pathTracerQ2->DispatchReflectionRefractionRays(
+            cmd, renderResolution.Width(), renderResolution.Height(),
+            uniform->GetData()->reflectRefractMaxDepth);
         // G5: direct lighting (sun) into the lighting channels, consumed by
         // the ASVGF chain below.
         pathTracerQ2->DispatchDirectLighting(cmd, renderResolution.Width(), renderResolution.Height());

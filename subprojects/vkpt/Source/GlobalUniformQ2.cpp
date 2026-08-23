@@ -70,6 +70,7 @@ void FillUniformBuffer(QVKUniformBuffer_t &ubo, const ShGlobalUniform &src,
     ubo.height            = static_cast<int>(src.renderHeight);
     ubo.current_gpu_slice_width = ubo.width;
     ubo.time              = src.time;
+    ubo.pt_reflect_refract = static_cast<int>(src.reflectRefractMaxDepth);
 
     ubo.first_person_model = 1;
     ubo.environment_type   = 0;
