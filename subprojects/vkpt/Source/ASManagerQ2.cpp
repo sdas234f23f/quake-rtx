@@ -114,7 +114,7 @@ ASManagerQ2::ASManagerQ2(VkDevice _device,
                     VertexCollectorFilterTypeFlagBits::PT_OPAQUE)),
   transparentBlas(_device, static_cast<VertexCollectorFilterTypeFlags>(
                     VertexCollectorFilterTypeFlagBits::CF_STATIC_NON_MOVABLE |
-                    VertexCollectorFilterTypeFlagBits::PT_OPAQUE)),
+                    VertexCollectorFilterTypeFlagBits::PT_REFRACT)),
   tlasEffects(_device, "Q2RTX effects TLAS"),
   descPool(VK_NULL_HANDLE),
   descSetLayout(VK_NULL_HANDLE),
