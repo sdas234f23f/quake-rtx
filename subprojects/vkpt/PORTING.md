@@ -114,9 +114,9 @@ Done:
   below for its deliberate omissions (sprites, particles, beams, dynamic
   emissive lights).
 
-Frame today: primary rays → ASVGF → compositing → interleave → TAAU → bloom +
-tone mapping → screen. The legacy renderer still renders its own full frame in
-parallel; the bridge only displays the Q2 one.
+Frame today: primary rays → reflection/refraction rays → ASVGF → compositing →
+interleave → TAAU → bloom + tone mapping → screen. The legacy renderer still
+renders its own full frame in parallel; the bridge only displays the Q2 one.
 
 ### Remaining work, in priority order
 
@@ -259,6 +259,15 @@ vendored `water.glsl` / `path_tracer_rgen.h` / `reflect_refract.rgen` take
 over: animated water normals (`get_water_normal` + `global_ubo.time`),
 refraction (`PT_REFRACT` SBT from `RG_GEOMETRY_PASS_THROUGH_TYPE_*_REFLECT_
 REFRACT`), caustics, and underwater fog.
+
+`reflect_refract` runs as a dedicated ray-tracing pass (two specialized
+pipelines for `spec_bounce_index` 0 and 1) dispatched after primary rays,
+filling SBT blocks 1 and 2 and driven by `ubo.pt_reflect_refract`
+(`reflectRefractMaxDepth`). Water/slime/lava surfaces are uploaded with
+`alpha = 1.0` in `GeometryQ2` — Q2RTX only gives `MATERIAL_KIND_TRANSPARENT` a
+fractional alpha. Quake's `r_wateralpha` upload would otherwise trip the
+translucent alpha split in `primary_rays.rgen` and let the opaque scrolling WAL
+albedo leak through the refracted water.
 
 The water normal map itself (`water_normal_texture`) lives in
 `GLOBAL_UBO_VAR_LIST`, not `UBO_CVAR_LIST`, so the cvar-default fill in

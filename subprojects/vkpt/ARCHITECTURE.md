@@ -43,10 +43,10 @@ in between:
 `VulkanDevice::DrawFrame` records the Q2 chain into a single command buffer:
 per-frame dynamic geometry finalization (G1b — `GeometryQ2::SubmitDynamic`,
 `ASManagerQ2::SubmitDynamic`, see `PORTING.md` and section 5's "Dynamic
-geometry" invariants), sky buffer resolve, primary rays, direct lighting,
-ASVGF (gradient image, temporal, LF, a-trous), checkerboard interleave, TAA
-upscale, then `BridgeQ2` (bloom + tone mapping + blit into the legacy final
-image).
+geometry" invariants), sky buffer resolve, primary rays, reflection/refraction
+rays, direct lighting, ASVGF (gradient image, temporal, LF, a-trous),
+checkerboard interleave, TAA upscale, then `BridgeQ2` (bloom + tone mapping +
+blit into the legacy final image).
 
 **Key structural difference:** Q2RTX builds its scene data once per map; we
 rebuild most of it every frame from RG_* upload calls. See section 4.
