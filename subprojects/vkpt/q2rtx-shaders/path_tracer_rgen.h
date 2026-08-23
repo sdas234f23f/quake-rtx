@@ -1043,6 +1043,14 @@ get_material(
 	base_color = image1.rgb * minfo.base_factor;
 	base_color = clamp(base_color, vec3(0), vec3(1));
 
+	// Quake 1 liquid surfaces carry their scrolling WAL albedo as the base
+	// texture, but the Q2RTX refraction path treats water/slime as transparent
+	// media whose color comes from the waterColorAndDensity / acidColorAndDensity
+	// uniforms plus extinction. Neutralize the surface albedo here so the opaque
+	// WAL never leaks into the primary G-buffer or reflected/refracted hits.
+	if(is_water(triangle.material_id) || is_slime(triangle.material_id))
+		base_color = vec3(0);
+
 	normal = geo_normal;
 	metallic = 0;
     roughness = 1;
@@ -1130,6 +1138,13 @@ get_material(
 		emissive = vec3(0);
 
     emissive += get_emissive_shell(triangle.material_id, triangle.shell) * base_color * (1 - metallic * 0.9);
+
+    // Water/slime must not emit the scrolling WAL as light: the fullbright
+    // Quake 1 lightmap is tinted by the WAL base texture in
+    // sample_emissive_texture(), which would otherwise leak the old opaque
+    // surface color into the transparent/emissive accumulation.
+    if(is_water(triangle.material_id) || is_slime(triangle.material_id))
+        emissive = vec3(0);
 }
 
 bool get_camera_uv(vec2 tex_coord, out vec2 cameraUV)
