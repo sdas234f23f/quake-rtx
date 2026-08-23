@@ -20,7 +20,8 @@ namespace
 
 void FillUniformBuffer(QVKUniformBuffer_t &ubo, const ShGlobalUniform &src,
                        uint32_t staticLightCount,
-                       const void *dynLightData, uint32_t dynLightCount)
+                       const void *dynLightData, uint32_t dynLightCount,
+                       uint32_t waterNormalTextureIndex)
 {
     memset(&ubo, 0, sizeof(ubo));
 
@@ -72,6 +73,13 @@ void FillUniformBuffer(QVKUniformBuffer_t &ubo, const ShGlobalUniform &src,
 
     ubo.first_person_model = 1;
     ubo.environment_type   = 0;
+
+    // Tiling water normal map sampled by get_water_normal() (water.glsl) to
+    // animate the water surface. global_ubo.h declares this in
+    // GLOBAL_UBO_VAR_LIST (not UBO_CVAR_LIST), so it has no cvars default and
+    // must be assigned explicitly - otherwise it stays 0 and the water surface
+    // renders with a flat normal (no waves).
+    ubo.water_normal_texture = static_cast<int>(waterNormalTextureIndex);
 
     // Camera medium (underwater/under-slime fog). The legacy ShGlobalUniform
     // stores the view leaf contents as a MEDIA_TYPE_* value (ShaderCommonC.h:
@@ -270,7 +278,7 @@ void GlobalUniformQ2::Upload(VkCommandBuffer cmd, uint32_t frameIndex, const ShG
     QVKUniformBuffer_t ubo;
     FillUniformBuffer(ubo, *src, staticLightCount,
                       dynLightsCpu.empty() ? nullptr : dynLightsCpu.data(),
-                      dynLightCount);
+                      dynLightCount, waterNormalTextureIndex);
 
     const VkDeviceSize instanceOffset =
         (sizeof(QVKUniformBuffer_t) + Q2_UBO_ALIGNMENT - 1) & ~(Q2_UBO_ALIGNMENT - 1);
@@ -311,6 +319,11 @@ void GlobalUniformQ2::SetDynLights(const void *data, uint32_t count)
 void GlobalUniformQ2::SetStaticLightCount(uint32_t count)
 {
     staticLightCount = count;
+}
+
+void GlobalUniformQ2::SetWaterNormalTextureIndex(uint32_t index)
+{
+    waterNormalTextureIndex = index;
 }
 
 void GlobalUniformQ2::SetInstanceBuffer(const void *pData, size_t size)

@@ -1153,6 +1153,8 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
         uniformQ2->SetStaticLightCount(lightManagerQ2->GetLightPolyCount());
         uniformQ2->SetDynLights(lightManagerQ2->GetDynLightData(),
                                 lightManagerQ2->GetDynLightCount());
+        uniformQ2->SetWaterNormalTextureIndex(
+            textureManager->GetWaterNormalTextureIndex());
 
         // Q2RTX framebuffers, filled alongside the legacy ones and consumed
         // by the Q2RTX chain below (PORTING.md, S2b/G4).

@@ -48,6 +48,11 @@ public:
     // data holds count packed DynLightData entries.
     void SetDynLights(const void *data, uint32_t count);
 
+    // The texture index of the tiling water normal map (TextureManager's
+    // WaterNormal_n.ktx2). Goes into ubo.water_normal_texture, which the
+    // water surface shaders sample for wave animation.
+    void SetWaterNormalTextureIndex(uint32_t index);
+
     VkDescriptorSet GetDescSet() const;
     VkDescriptorSetLayout GetDescSetLayout() const;
 
@@ -62,6 +67,7 @@ private:
     uint32_t staticLightCount = 0;
     std::vector<uint8_t> dynLightsCpu;
     uint32_t dynLightCount = 0;
+    uint32_t waterNormalTextureIndex = 0;
 
     VkDescriptorPool      descPool;
     VkDescriptorSetLayout descSetLayout;
