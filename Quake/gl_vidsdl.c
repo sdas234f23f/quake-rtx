@@ -1041,18 +1041,148 @@ Debug helper: aim the crosshair at a surface and run this command to log the
 entity/model/skin/texture underneath. Bound to "t" by default.
 ==================
 */
+/*
+=================
+RT_TexInfo helpers
+
+Ray/brush intersection so rt_texinfo can resolve the actual surface
+(and its texture) under the crosshair for both the static world and
+brush-model entities (health/ammo pickups, doors, plats, etc.).
+=================
+*/
+
+typedef struct rt_texinfo_hit_s
+{
+	const qmodel_t		*model;
+	const entity_t		*ent;
+	const msurface_t	*surf;
+	float				t;
+} rt_texinfo_hit_t;
+
+static void RT_TransformPoint (const RgTransform *transform, const vec3_t in, vec3_t out)
+{
+	for (int i = 0; i < 3; i++)
+		out[i] = transform->matrix[i][0] * in[0] + transform->matrix[i][1] * in[1]
+			+ transform->matrix[i][2] * in[2] + transform->matrix[i][3];
+}
+
+static qboolean RT_RayIntersectsTriangle (const vec3_t origin, const vec3_t dir,
+	const vec3_t a, const vec3_t b, const vec3_t c, float *t)
+{
+	vec3_t e1, e2, p, q, tv;
+	VectorSubtract (b, a, e1);
+	VectorSubtract (c, a, e2);
+
+	CrossProduct (dir, e2, p);
+	float det = DotProduct (e1, p);
+	if (det > -1e-8f && det < 1e-8f)
+		return false;
+
+	float inv = 1.0f / det;
+	VectorSubtract (origin, a, tv);
+
+	float u = inv * DotProduct (tv, p);
+	if (u < 0.0f || u > 1.0f)
+		return false;
+
+	CrossProduct (tv, e1, q);
+	float v = inv * DotProduct (dir, q);
+	if (v < 0.0f || u + v > 1.0f)
+		return false;
+
+	float tcur = inv * DotProduct (e2, q);
+	if (tcur <= 1e-5f)
+		return false;
+
+	*t = tcur;
+	return true;
+}
+
+static void RT_TraceBrushSurfaces (const vec3_t origin, const vec3_t dir, const qmodel_t *model,
+	const entity_t *ent, const RgTransform *transform, rt_texinfo_hit_t *hit)
+{
+	if (!model || model->type != mod_brush || model->needload)
+		return;
+
+	msurface_t *surf = model->surfaces + model->firstmodelsurface;
+	for (int s = 0; s < model->nummodelsurfaces; s++, surf++)
+	{
+		if (!(surf->flags & SURF_DRAWTILED))
+			continue;
+
+		for (glpoly_t *poly = surf->polys; poly; poly = poly->next)
+		{
+			if (poly->numverts < 3)
+				continue;
+
+			vec3_t v0, v1;
+			if (transform)
+			{
+				RT_TransformPoint (transform, poly->verts[0], v0);
+				RT_TransformPoint (transform, poly->verts[1], v1);
+			}
+			else
+			{
+				VectorCopy (poly->verts[0], v0);
+				VectorCopy (poly->verts[1], v1);
+			}
+
+			// fan around verts[0]
+			for (int i = 2; i < poly->numverts; i++)
+			{
+				vec3_t vc;
+				if (transform)
+					RT_TransformPoint (transform, poly->verts[i], vc);
+				else
+					VectorCopy (poly->verts[i], vc);
+
+				float t;
+				if (RT_RayIntersectsTriangle (origin, dir, v0, v1, vc, &t) && t < hit->t)
+				{
+					hit->t = t;
+					hit->model = model;
+					hit->ent = ent;
+					hit->surf = surf;
+				}
+
+				VectorCopy (vc, v1);
+			}
+		}
+	}
+}
+
+static void RT_TexInfoLog (const char *fmt, ...)
+{
+	va_list argptr;
+	char	buf[4096];
+
+	va_start (argptr, fmt);
+	q_vsnprintf (buf, sizeof (buf), fmt, argptr);
+	va_end (argptr);
+
+	Con_Printf ("%s", buf);
+
+	FILE *f = fopen ("q2rt_texinfo_dbg.txt", "a");
+	if (f)
+	{
+		fprintf (f, "%s", buf);
+		fflush (f);
+		fclose (f);
+	}
+}
+
 static void RT_TexInfo (void)
 {
 	if (!CVAR_TO_BOOL (rt_renderer))
 	{
-		Con_Printf ("rt_texinfo: only available with rt_renderer 1\n");
+		RT_TexInfoLog ("rt_texinfo: only available with rt_renderer 1\n");
 		return;
 	}
 
 	vec3_t forward, right, up;
 	AngleVectors (r_refdef.viewangles, forward, right, up);
 
-	Con_Printf ("rt_texinfo: org %.1f %.1f %.1f dir %.3f %.3f %.3f\n",
+	RT_TexInfoLog ("rt_texinfo: org %.1f %.1f %.1f dir %.3f %.3f %.3f\n",
 		r_refdef.vieworg[0], r_refdef.vieworg[1], r_refdef.vieworg[2],
 		forward[0], forward[1], forward[2]);
 
@@ -1090,7 +1220,7 @@ static void RT_TexInfo (void)
 		if (hdr && (skinnum < 0 || skinnum >= hdr->numskins))
 			skinnum = 0;
 
-		Con_Printf ("rt_texinfo: entity %d model '%s' skin %d frame %d\n",
+		RT_TexInfoLog ("rt_texinfo: entity %d model '%s' skin %d frame %d\n",
 			(int)(hitent - cl.entities), e->model->name, e->skinnum, e->frame);
 
 		if (hdr)
@@ -1099,9 +1229,9 @@ static void RT_TexInfo (void)
 			gltexture_t *tx = hdr->gltextures[skinnum][anim];
 			if (tx)
 			{
-				Con_Printf ("  texture '%s' source '%s' rtname '%s'\n",
+				RT_TexInfoLog ("  texture '%s' source '%s' rtname '%s'\n",
 					tx->name, tx->source_file, tx->rtname);
-				Con_Printf ("  emissive=%d islight=%d custom=%d mat=%u avg_emis=%.3f %.3f %.3f\n",
+				RT_TexInfoLog ("  emissive=%d islight=%d custom=%d mat=%u avg_emis=%.3f %.3f %.3f\n",
 					!!(tx->flags & TEXPREF_RT_IS_EMISSIVE),
 					tx->rtq2islight,
 					tx->rtcustomtextype,
@@ -1110,37 +1240,101 @@ static void RT_TexInfo (void)
 			}
 			else
 			{
-				Con_Printf ("  texture: (none)\n");
+				RT_TexInfoLog ("  texture: (none)\n");
 			}
 		}
 		return;
 	}
 
-	// no alias model under the crosshair -- report the world surface we hit
+	// no alias model under the crosshair -- ray-trace the rendered brush
+	// geometry (static world + brush-model entities) so we can report the
+	// actual surface texture, not just the hit plane. Health/ammo pickups,
+	// doors and platforms are brush models.
 	if (!cl.worldmodel)
 	{
-		Con_Printf ("rt_texinfo: no world model loaded\n");
+		RT_TexInfoLog ("rt_texinfo: no world model loaded\n");
 		return;
 	}
 
-	vec3_t end;
-	VectorMA (r_refdef.vieworg, 8192.0f, forward, end);
+	rt_texinfo_hit_t hit;
+	memset (&hit, 0, sizeof (hit));
+	hit.t = 1e30f;
 
-	trace_t trace;
-	memset (&trace, 0, sizeof (trace));
-	SV_RecursiveHullCheck (cl.worldmodel->hulls, r_refdef.vieworg, end, &trace, CONTENTMASK_ANYSOLID);
+	RT_TraceBrushSurfaces (r_refdef.vieworg, forward, cl.worldmodel, NULL, NULL, &hit);
 
-	if (trace.fraction < 1.0f)
+	for (int i = 1; i < cl.num_entities; i++)
 	{
-		Con_Printf ("rt_texinfo: world hit frac %.3f pos %.1f %.1f %.1f normal %.3f %.3f %.3f dist %.1f\n",
-			trace.fraction,
-			trace.endpos[0], trace.endpos[1], trace.endpos[2],
-			trace.plane.normal[0], trace.plane.normal[1], trace.plane.normal[2],
-			trace.plane.dist);
+		if (i == cl.viewentity)
+			continue;
+
+		entity_t *e = &cl.entities[i];
+		if (!e->model || e->model->needload || e->model->type != mod_brush)
+			continue;
+		if (e->model == cl.worldmodel)
+			continue;
+
+		vec3_t mins, maxs;
+		VectorAdd (e->origin, e->model->rmins, mins);
+		VectorAdd (e->origin, e->model->rmaxs, maxs);
+		if (RT_RayIntersectsAABB (r_refdef.vieworg, forward, mins, maxs) < 0.0f)
+			continue;
+
+		RgTransform transform = RT_GetBrushModelMatrix (e);
+		RT_TraceBrushSurfaces (r_refdef.vieworg, forward, e->model, e, &transform, &hit);
+	}
+
+	if (hit.surf)
+	{
+		texture_t *tex = hit.surf->texinfo ? hit.surf->texinfo->texture : NULL;
+		gltexture_t *gt = tex ? tex->gltexture : NULL;
+		char		 texname[17];
+
+		if (tex)
+		{
+			memcpy (texname, tex->name, 16);
+			texname[16] = '\0';
+		}
+
+		RT_TexInfoLog ("rt_texinfo: %s hit dist %.1f model '%s' entity %d surf flags 0x%x\n",
+			hit.ent ? "bmodel" : "world",
+			hit.t,
+			hit.model->name,
+			hit.ent ? (int)(hit.ent - cl.entities) : 0,
+			hit.surf->flags);
+
+		if (tex)
+		{
+			RT_TexInfoLog ("  texture '%s'", texname);
+			if (gt)
+				RT_TexInfoLog (" gltex '%s' source '%s' rtname '%s'\n",
+					gt->name, gt->source_file, gt->rtname);
+			else
+				RT_TexInfoLog (" (no gltexture)\n");
+
+			if (gt)
+				RT_TexInfoLog ("  emissive=%d islight=%d custom=%d mat=%u avg_emis=%.3f %.3f %.3f\n",
+					!!(gt->flags & TEXPREF_RT_IS_EMISSIVE),
+					gt->rtq2islight,
+					gt->rtcustomtextype,
+					(unsigned)gt->rtmaterial,
+					gt->rtq2emissivecolor[0], gt->rtq2emissivecolor[1], gt->rtq2emissivecolor[2]);
+
+			if (tex->fullbright)
+				RT_TexInfoLog ("  fullbright '%s' emissive=%d islight=%d custom=%d mat=%u\n",
+					tex->fullbright->name,
+					!!(tex->fullbright->flags & TEXPREF_RT_IS_EMISSIVE),
+					tex->fullbright->rtq2islight,
+					tex->fullbright->rtcustomtextype,
+					(unsigned)tex->fullbright->rtmaterial);
+		}
+		else
+		{
+			RT_TexInfoLog ("  texture: (none)\n");
+		}
 	}
 	else
 	{
-		Con_Printf ("rt_texinfo: no hit\n");
+		RT_TexInfoLog ("rt_texinfo: no hit\n");
 	}
 }
 
