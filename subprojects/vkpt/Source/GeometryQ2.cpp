@@ -41,6 +41,30 @@ static void DbgDynamic(const char *fmt, ...)
     fflush(file);
 }
 
+// Map the game's RT_MAT_KIND_* ordinal (Quake/rt_material.h) to the Q2RTX
+// MATERIAL_KIND_* kind nibble (constants.h). These do NOT align numerically:
+// rt_material.h has no EXPLOSION/TRANSPARENT entries, so SCREEN and CAMERA are
+// shifted by two relative to the bit constants. Ordinal values are documented
+// here so the mapping stays in sync with rt_material.h.
+static uint32_t MapMaterialKind(int qmKind)
+{
+    switch (qmKind)
+    {
+    case 0:  return MATERIAL_KIND_INVALID;    // RT_MAT_KIND_INVALID
+    case 1:  return MATERIAL_KIND_REGULAR;    // RT_MAT_KIND_REGULAR
+    case 2:  return MATERIAL_KIND_CHROME;     // RT_MAT_KIND_CHROME
+    case 3:  return MATERIAL_KIND_WATER;      // RT_MAT_KIND_WATER
+    case 4:  return MATERIAL_KIND_LAVA;       // RT_MAT_KIND_LAVA
+    case 5:  return MATERIAL_KIND_SLIME;      // RT_MAT_KIND_SLIME
+    case 6:  return MATERIAL_KIND_GLASS;      // RT_MAT_KIND_GLASS
+    case 7:  return MATERIAL_KIND_SKY;        // RT_MAT_KIND_SKY
+    case 8:  return MATERIAL_KIND_INVISIBLE;  // RT_MAT_KIND_INVISIBLE
+    case 9:  return MATERIAL_KIND_SCREEN;     // RT_MAT_KIND_SCREEN (shifted)
+    case 10: return MATERIAL_KIND_CAMERA;     // RT_MAT_KIND_CAMERA (shifted)
+    default: return MATERIAL_KIND_REGULAR;
+    }
+}
+
 // Octahedral normal encoding, mirroring encode_normal() from utils.glsl so
 // the CPU-produced normals decode to the same values the shaders expect.
 static uint32_t EncodeNormal(float nx, float ny, float nz)
@@ -557,9 +581,12 @@ uint32_t GeometryQ2::AppendGeometry(const RgGeometryUploadInfo &uploadInfo,
 
     if (materialId != 1)
     {
-        // Real kinds (WATER/GLASS/SKY/...) are enabled with the texture
-        // port; light surfaces already emit via MATERIAL_FLAG_LIGHT.
-        materialId |= MATERIAL_KIND_REGULAR;
+        // Map the game's RT_MAT_KIND_* ordinal to the Q2RTX MATERIAL_KIND_*
+        // nibble. Quake 1 water/slime/lava surfaces reach this through the
+        // surface-flag override in r_world.c (is_water -> WATER, is_acid ->
+        // SLIME); explicit .mat kinds (glass, sky, ...) map directly. Unknown
+        // or unset kinds fall back to REGULAR.
+        materialId |= MapMaterialKind(qm ? qm->kind : /*RT_MAT_KIND_REGULAR*/ 1);
         if (qm && qm->is_light)
         {
             materialId |= MATERIAL_FLAG_LIGHT;

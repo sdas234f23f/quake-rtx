@@ -233,6 +233,33 @@ roughness/metalness/emission from legacy RME and alpha tests from albedo alpha;
 this bridge is intentionally temporary while both renderers share the material
 system.
 
+#### G6f — water / liquid material kinds
+
+Water, slime, and lava surfaces now carry the real Q2RTX material kind instead
+of the forced `MATERIAL_KIND_REGULAR`:
+
+- `GeometryQ2::AppendGeometry` maps the game's `RT_MAT_KIND_*` ordinal
+  (`Quake/rt_material.h`) to the Q2RTX `MATERIAL_KIND_*` nibble via an explicit
+  `MapMaterialKind` table. The two enums do **not** align numerically —
+  `rt_material.h` omits `EXPLOSION`/`TRANSPARENT`, so `SCREEN` and `CAMERA`
+  are shifted by two — so a shift of the enum value would be wrong.
+- `r_world.c` overrides the resolved material kind from the surface flags for
+  Quake 1 liquids, which are flagged by `SURF_DRAWWATER`/`SURF_DRAWSLIME`
+  rather than a `.mat` kind: `is_water -> RT_MAT_KIND_WATER`,
+  `is_acid -> RT_MAT_KIND_SLIME`. The surface flag wins even when a `.mat`
+  exists, and it forces the `pQ2Material` upload when no `.mat` is defined.
+- `GlobalUniformQ2` maps the legacy `cameraMediaType` (`MEDIA_TYPE_*`,
+  `ShaderCommonC.h`) to the Q2RTX `global_ubo.medium` (`MEDIUM_*`,
+  `constants.h`). The numbering differs (`MEDIA_TYPE_GLASS = 2` vs
+  `MEDIUM_GLASS = 4`, `MEDIA_TYPE_ACID = 3` vs `MEDIUM_SLIME = 2`), so an
+  explicit switch is used. This turns on primary-ray extinction underwater.
+
+With the correct kind, the existing Q2RTX shader paths already wired in the
+vendored `water.glsl` / `path_tracer_rgen.h` / `reflect_refract.rgen` take
+over: animated water normals (`get_water_normal` + `global_ubo.time`),
+refraction (`PT_REFRACT` SBT from `RG_GEOMETRY_PASS_THROUGH_TYPE_*_REFLECT_
+REFRACT`), caustics, and underwater fog.
+
 #### G6d — per-frame UBO correctness
 
 Small but blocking for temporal quality; see the defect list below.

@@ -73,6 +73,20 @@ void FillUniformBuffer(QVKUniformBuffer_t &ubo, const ShGlobalUniform &src,
     ubo.first_person_model = 1;
     ubo.environment_type   = 0;
 
+    // Camera medium (underwater/under-slime fog). The legacy ShGlobalUniform
+    // stores the view leaf contents as a MEDIA_TYPE_* value (ShaderCommonC.h:
+    // VACUUM=0, WATER=1, GLASS=2, ACID=3); Q2RTX's global_ubo.medium uses
+    // MEDIUM_* (constants.h: NONE=0, WATER=1, SLIME=2, LAVA=3, GLASS=4). The
+    // two numbering schemes differ, so map explicitly. MEDIUM_* is visible
+    // here via global_ubo.h -> constants.h.
+    switch (src.cameraMediaType)
+    {
+    case MEDIA_TYPE_WATER: ubo.medium = MEDIUM_WATER; break;
+    case MEDIA_TYPE_ACID:  ubo.medium = MEDIUM_SLIME; break; // slime/acid -> slime medium
+    case MEDIA_TYPE_GLASS: ubo.medium = MEDIUM_GLASS; break;
+    default:               ubo.medium = MEDIUM_NONE;  break;
+    }
+
     // G6c: the G5 placeholder sun is gone - Quake has no sun, all lighting
     // comes from the emissive surfaces in light_polys. pt_direct_sun_light
     // stays on so the sky port can switch it back on by setting sun_visible.

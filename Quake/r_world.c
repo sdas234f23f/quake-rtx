@@ -1685,8 +1685,20 @@ static void RT_FlushBatch (rt_cb_context_t *cbx, const rt_uploadsurf_state_t *s,
 			q2material.bump_scale = resolved_mat->bump_scale;
 			q2material.kind = resolved_mat->kind;
 			q2material.is_light = resolved_mat->is_light;
-			info.pQ2Material = &q2material;
 		}
+
+		// Quake 1 water/slime surfaces are flagged via SURF_DRAWWATER /
+		// SURF_DRAWSLIME rather than a .mat kind. The surface flag is
+		// authoritative and must win, so the Q2 renderer maps the surface to
+		// MATERIAL_KIND_WATER / MATERIAL_KIND_SLIME (refraction + extinction)
+		// even when no .mat definition exists.
+		if (s->is_water)
+			q2material.kind = RT_MAT_KIND_WATER;
+		else if (s->is_acid)
+			q2material.kind = RT_MAT_KIND_SLIME;
+
+		if (resolved_mat || s->is_water || s->is_acid)
+			info.pQ2Material = &q2material;
 
 		if (s->is_teleport && !CVAR_TO_BOOL (rt_classic_render))
 		{
