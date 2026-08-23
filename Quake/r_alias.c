@@ -28,6 +28,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 extern cvar_t r_drawflat, gl_fullbrights, r_lerpmodels, r_lerpmove, r_showtris; // johnfitz
 extern cvar_t r_lerpturn;
 extern cvar_t cl_gun_fovscale;
+extern cvar_t rt_q2lights;
+extern cvar_t rt_plight_intensity;
 
 // up to 16 color translated skins
 gltexture_t *playertextures[MAX_SCOREBOARD]; // johnfitz -- changed to an array of pointers
@@ -635,6 +637,106 @@ static RgTransform RT_GetAliasModelTransform (const aliashdr_t *paliashdr, const
 	return RT_GetModelTransform (model_matrix);
 }
 
+// ============================================================================
+// Emissive alias-model area lights (Q2RTX extract_model_lights equivalent)
+//
+// Alias models are drawn from NUM_ENTITIES_CBX parallel tasks, so emissive
+// triangles are collected into an atomic array here and uploaded (plus cluster
+// registered) single-threaded in RT_UploadAllAliasModelLights, mirroring the
+// static world path (rt_wldlights_tri -> RT_UploadAllWorldModelLights).
+// ============================================================================
+
+#define MAX_ALIASMODEL_LIGHTS_COUNT 2048
+
+static RgPolygonalLightUploadInfo rt_aliaslights_tri[MAX_ALIASMODEL_LIGHTS_COUNT];
+static atomic_uint32_t            rt_aliaslights_tri_count;
+
+static int RT_AliasModelLightTriCount (void)
+{
+	const uint32_t n = Atomic_LoadUInt32 (&rt_aliaslights_tri_count);
+	return (int)(n < MAX_ALIASMODEL_LIGHTS_COUNT ? n : MAX_ALIASMODEL_LIGHTS_COUNT);
+}
+
+void RT_ResetAliasModelLights (void)
+{
+	Atomic_StoreUInt32 (&rt_aliaslights_tri_count, 0);
+}
+
+static RgFloat3D RT_ApplyAliasTransform (const RgTransform *transform, const vec3_t v)
+{
+	RgFloat3D r = {0};
+	for (int i = 0; i < 3; i++)
+	{
+		r.data[i] =
+			transform->matrix[i][0] * v[0] +
+			transform->matrix[i][1] * v[1] +
+			transform->matrix[i][2] * v[2] +
+			transform->matrix[i][3];
+	}
+	return r;
+}
+
+// Collect the emissive triangles of a light-emitting alias-model skin into the
+// per-frame atomic array. Must be called from the parallel entity tasks only;
+// the upload/registration happens later on a single thread.
+static void RT_CollectAliasModelLights (
+	const RgGeometryUploadInfo *info, gltexture_t *tx, int entuniqueid)
+{
+	if (!CVAR_TO_BOOL (rt_q2lights))
+		return;
+	if (!tx || !tx->rtq2islight)
+		return;
+
+	vec3_t color;
+	VectorCopy (tx->rtq2emissivecolor, color);
+	VectorScale (color, CVAR_TO_FLOAT (rt_plight_intensity), color);
+	RT_FIXUP_LIGHT_INTENSITY (color, true);
+
+	const int num_tris = (int)info->indexCount / 3;
+	for (int tri = 0; tri < num_tris; tri++)
+	{
+		const vec_t *a0 = info->pVertices[info->pIndices[tri * 3 + 0]].position;
+		const vec_t *a1 = info->pVertices[info->pIndices[tri * 3 + 1]].position;
+		const vec_t *a2 = info->pVertices[info->pIndices[tri * 3 + 2]].position;
+
+		RgPolygonalLightUploadInfo light_info = {
+			.uniqueID = RT_GetAliasModelTriUniqueId (entuniqueid, tri),
+			.color = RT_VEC3 (color),
+			.positions =
+				{
+					RT_ApplyAliasTransform (&info->transform, a0),
+					RT_ApplyAliasTransform (&info->transform, a1),
+					RT_ApplyAliasTransform (&info->transform, a2),
+				},
+		};
+
+		const uint32_t slot = Atomic_AddUInt32 (&rt_aliaslights_tri_count, 1);
+		if (slot < MAX_ALIASMODEL_LIGHTS_COUNT)
+		{
+			rt_aliaslights_tri[slot] = light_info;
+		}
+	}
+}
+
+void RT_UploadAllAliasModelLights (void)
+{
+	if (!CVAR_TO_BOOL (rt_q2lights))
+		return;
+
+	for (int i = 0; i < RT_AliasModelLightTriCount (); i++)
+	{
+		const RgPolygonalLightUploadInfo *l = &rt_aliaslights_tri[i];
+
+		RgResult r = rgUploadPolygonalLight (vulkan_globals_rt.instance, l);
+		RG_CHECK (r);
+
+		vec3_t origin;
+		RT_TriangleLightOrigin (l, origin);
+
+		RT_ClusterLightAddUnique (l->uniqueID, origin, -1.0f);
+	}
+}
+
 static void RT_GL_DrawAliasFrame (
 	rt_cb_context_t *cbx, entity_t *e, aliashdr_t *paliashdr, const lerpdata_t lerpdata, gltexture_t *tx, float entity_alpha,
 	qboolean alphatest, vec3_t shadevector, vec3_t lightcolor, int entuniqueid)
@@ -729,6 +831,11 @@ static void RT_GL_DrawAliasFrame (
 			.defaultEmission = 0,
 			.transform = RT_GetAliasModelTransform (paliashdr, &lerpdata, isfirstperson),
 		};
+
+		// Emissive .mat is_light skins (e.g. progs/flame.mdl) become Q2RTX
+		// polygonal area lights. Collected here, uploaded in
+		// RT_UploadAllAliasModelLights.
+		RT_CollectAliasModelLights (&info, tx, entuniqueid);
 
 		RgResult r = rgUploadGeometry (vulkan_globals_rt.instance, &info);
 		RG_CHECK (r);

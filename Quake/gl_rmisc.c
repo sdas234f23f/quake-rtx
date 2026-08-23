@@ -567,6 +567,20 @@ uint64_t RT_GetAliasModelUniqueId (int entuniqueid)
 		entuniqueid;		// entity
 }
 
+// Per-triangle variant used for emissive alias-model area lights (Q2RTX
+// extract_model_lights equivalent). The geometry upload keeps the plain
+// RT_GetAliasModelUniqueId; the light uploads need one distinct ID per
+// triangle so the cluster lists resolve each area light independently.
+uint64_t RT_GetAliasModelTriUniqueId (int entuniqueid, uint64_t triangle)
+{
+	assert (entuniqueid >= 0);
+
+	return
+		2ull << 60 |		// model type
+		triangle << 32 |	// triangle
+		(uint32_t)entuniqueid;	// entity
+}
+
 uint64_t RT_GetSpriteModelUniqueId (int entuniqueid)
 {
 	assert (entuniqueid >= 0);

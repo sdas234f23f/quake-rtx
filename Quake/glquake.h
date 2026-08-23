@@ -1080,6 +1080,7 @@ static inline uint32_t RT_PackColorToUint32_FromFloat01(float r, float g, float 
 #define RT_UNIQUEID_DONTCARE   (UINT64_MAX)
 uint64_t RT_GetBrushSurfUniqueId (int entuniqueid, const qmodel_t *model, const msurface_t *surf, uint64_t triangle);
 uint64_t RT_GetAliasModelUniqueId (int entuniqueid);
+uint64_t RT_GetAliasModelTriUniqueId (int entuniqueid, uint64_t triangle);
 uint64_t RT_GetSpriteModelUniqueId (int entuniqueid);
 uint64_t RT_GetCustomObjectUniqueId (int index);
 
@@ -1143,6 +1144,9 @@ void RT_GL_Viewport (rt_cb_context_t *cbx, float x, float y, float width, float 
 // q2rtx: RT renderer draw entry points (defined in r_world.c / gl_sky.c /
 // r_alias.c / r_brush.c / r_sprite.c / r_part.c)
 void RT_ResetWorldModelLights (void);
+void RT_ResetAliasModelLights (void);
+void RT_UploadAllAliasModelLights (void);
+void RT_TriangleLightOrigin (const RgPolygonalLightUploadInfo *l, vec3_t out);
 void RT_DrawWorld (rt_cb_context_t *cbx, int index);
 void RT_DrawWorld_Water (rt_cb_context_t *cbx);
 void RT_DrawWorld_ShowTris (rt_cb_context_t *cbx);

@@ -2500,7 +2500,7 @@ The sphere path gets this for free (AddSphericalLight pushes the center out
 by the light radius); RT_GetSurfaceCluster does the same for submodels.
 =================
 */
-static void RT_TriangleLightOrigin (const RgPolygonalLightUploadInfo *l, vec3_t out)
+void RT_TriangleLightOrigin (const RgPolygonalLightUploadInfo *l, vec3_t out)
 {
 	vec3_t centroid;
 	for (int a = 0; a < 3; a++)

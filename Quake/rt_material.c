@@ -807,6 +807,7 @@ qboolean RT_MAT_AutoDetect(const char *name, rt_material_t *out)
     if (rt_tex_exists(suf))
     {
         q_strlcpy(out->filename_emissive, suf, sizeof(out->filename_emissive));
+        out->is_light = true; // HD-pack luma textures emit light (Q2RTX convention)
         found = true;
     }
     else
@@ -815,6 +816,7 @@ qboolean RT_MAT_AutoDetect(const char *name, rt_material_t *out)
         if (rt_tex_exists(suf))
         {
             q_strlcpy(out->filename_emissive, suf, sizeof(out->filename_emissive));
+            out->is_light = true;
             found = true;
         }
     }

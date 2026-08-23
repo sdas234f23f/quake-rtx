@@ -622,6 +622,7 @@ static void RT_R_SetupViewBeforeMark (void)
 
 	// rebuild the Q2RTX per-cluster light lists from scratch this frame
 	RT_ResetWorldModelLights ();
+	RT_ResetAliasModelLights ();
 	RT_ClusterLightListsReset ();
 
 	RT_UploadAllDlights ();
@@ -937,6 +938,7 @@ static void RT_R_DrawViewModelTask (void *unused)
 	RT_R_ShowBoundingBoxes (cbx);      // johnfitz
 	RT_UploadAllElights ();            // RT
 	RT_UploadAllWorldModelLights ();   // RT
+	RT_UploadAllAliasModelLights ();   // RT
 	RT_UploadAllTeleports ();          // RT
 
 	// all RT lights are uploaded and registered - build + upload the
