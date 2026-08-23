@@ -1061,6 +1061,9 @@ static void RT_TexInfo (void)
 	entity_t *hitent = NULL;
 	for (int i = 1; i < cl.num_entities; i++)
 	{
+		if (i == cl.viewentity)
+			continue; // skip the local player, whose AABB always contains the view origin
+
 		entity_t *e = &cl.entities[i];
 		if (!e->model || e->model->needload || e->model->type != mod_alias)
 			continue;
