@@ -125,9 +125,13 @@ foreach ($pkzRoot in @((Join-Path $PSScriptRoot "id1"), (Join-Path $PSScriptRoot
             $dst = Join-Path $gameDir $pkz.Name
             # tolerate transient locks (Search indexer / antivirus): if the
             # target can't be replaced it is already present from a previous
-            # build, so just warn and continue
+            # build, so just warn and continue. Only remove when present --
+            # Remove-Item -ErrorAction Stop would throw on a missing file and
+            # skip the copy below, leaving the pkz undeployed on first build.
             try {
-                Remove-Item $dst -Force -ErrorAction Stop
+                if (Test-Path $dst) {
+                    Remove-Item $dst -Force -ErrorAction Stop
+                }
                 Copy-Item $pkz.FullName $dst -Force -ErrorAction Stop
             }
             catch {
