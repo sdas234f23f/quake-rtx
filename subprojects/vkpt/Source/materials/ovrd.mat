@@ -4,13 +4,13 @@ progs/armor.mdl:frame1:
 	texture_base progs/armor/1.png
 	texture_normals progs/armor/1_n.png
 	texture_gloss progs/armor/1_gloss.png
-	metalness_factor 1.0
+	metalness_factor 0.0
 
 progs/armor.mdl:frame2:
 	texture_base progs/armor/2.png
 	texture_normals progs/armor/2_n.png
 	texture_gloss progs/armor/2_gloss.png
-	metalness_factor 1.0
+	metalness_factor 0.0
 
 progs/b_g_key.mdl:frame0:
 
@@ -257,21 +257,21 @@ textures/+0_med100:
 	texture_normals textures/+0_med100_n.png
 	texture_emissive textures/+0_med100_luma.png
 	texture_gloss textures/+0_med100_gloss.png
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/+0_med25:
 	texture_normals textures/+0_med25_n.png
 	texture_emissive textures/+0_med25_luma.png
 	texture_gloss textures/+0_med25_gloss.png
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/+0_med25s:
 	texture_normals textures/+0_med25s_n.png
 	texture_emissive textures/+0_med25s_luma.png
 	texture_gloss textures/+0_med25s_gloss.png
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/+0basebtn:
@@ -306,21 +306,21 @@ textures/+1_med100:
 	texture_normals textures/+1_med100_n.png
 	texture_emissive textures/+1_med100_luma.png
 	texture_gloss textures/+1_med100_gloss.png
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/+1_med25:
 	texture_normals textures/+1_med25_n.png
 	texture_emissive textures/+1_med25_luma.png
 	texture_gloss textures/+1_med25_gloss.png
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/+1_med25s:
 	texture_normals textures/+1_med25s_n.png
 	texture_emissive textures/+1_med25s_luma.png
 	texture_gloss textures/+1_med25s_gloss.png
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/+1basebtn:
@@ -347,14 +347,14 @@ textures/+2_med100:
 	texture_normals textures/+2_med100_n.png
 	texture_emissive textures/+2_med100_luma.png
 	texture_gloss textures/+2_med100_gloss.png
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/+2_med25:
 	texture_normals textures/+2_med25_n.png
 	texture_emissive textures/+2_med25_luma.png
 	texture_gloss textures/+2_med25_gloss.png
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/+2butn:
@@ -379,14 +379,14 @@ textures/+3_med100:
 	texture_normals textures/+3_med100_n.png
 	texture_emissive textures/+3_med100_luma.png
 	texture_gloss textures/+3_med100_gloss.png
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/+3_med25:
 	texture_normals textures/+3_med25_n.png
 	texture_emissive textures/+3_med25_luma.png
 	texture_gloss textures/+3_med25_gloss.png
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/+3butn:
@@ -528,26 +528,26 @@ textures/batt0sid:
 	texture_emissive textures/batt0sid_luma.png
 	texture_gloss textures/batt0sid_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/batt0top:
 	texture_normals textures/batt0top_n.png
 	texture_gloss textures/batt0top_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 
 textures/batt1sid:
 	texture_normals textures/batt1sid_n.png
 	texture_gloss textures/batt1sid_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 
 textures/batt1top:
 	texture_normals textures/batt1top_n.png
 	texture_gloss textures/batt1top_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 
 textures/black:
 
@@ -734,7 +734,7 @@ textures/dem5_3:
 	texture_emissive textures/dem5_3_luma.png
 	texture_gloss textures/dem5_3_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/demc4_4:
@@ -1186,14 +1186,14 @@ textures/med100:
 	texture_normals textures/med100_n.png
 	texture_gloss textures/med100_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 
 textures/med3_0:
 	texture_normals textures/med3_0_n.png
 	texture_emissive textures/med3_0_luma.png
 	texture_gloss textures/med3_0_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/med3_1:
@@ -1201,7 +1201,7 @@ textures/med3_1:
 	texture_emissive textures/med3_1_luma.png
 	texture_gloss textures/med3_1_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/met5_1:
@@ -1328,20 +1328,20 @@ textures/nail0sid:
 	texture_normals textures/nail0sid_n.png
 	texture_gloss textures/nail0sid_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 
 textures/nail0top:
 	texture_normals textures/nail0top_n.png
 	texture_gloss textures/nail0top_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 
 textures/nail1sid:
 	texture_normals textures/nail1sid_n.png
 	texture_emissive textures/nail1sid_luma.png
 	texture_gloss textures/nail1sid_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/nail1top:
@@ -1349,7 +1349,7 @@ textures/nail1top:
 	texture_emissive textures/nail1top_luma.png
 	texture_gloss textures/nail1top_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/net:
@@ -1418,7 +1418,7 @@ textures/rock0sid:
 	texture_normals textures/rock0sid_n.png
 	texture_gloss textures/rock0sid_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 
 textures/rock1_2:
 
@@ -1426,7 +1426,7 @@ textures/rock1sid:
 	texture_normals textures/rock1sid_n.png
 	texture_gloss textures/rock1sid_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 
 textures/rock3_2:
 
@@ -1586,20 +1586,20 @@ textures/shot0sid:
 	texture_normals textures/shot0sid_n.png
 	texture_gloss textures/shot0sid_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 
 textures/shot0top:
 	texture_normals textures/shot0top_n.png
 	texture_gloss textures/shot0top_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 
 textures/shot1sid:
 	texture_normals textures/shot1sid_n.png
 	texture_emissive textures/shot1sid_luma.png
 	texture_gloss textures/shot1sid_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/shot1top:
@@ -1607,7 +1607,7 @@ textures/shot1top:
 	texture_emissive textures/shot1top_luma.png
 	texture_gloss textures/shot1top_gloss.png
 	base_factor 1.4
-	metalness_factor 1.0
+	metalness_factor 0.0
 	is_light 1
 
 textures/skill0:

@@ -117,6 +117,7 @@ static SDL_Mutex *rtspecial_mutex;
 
 static THREAD_LOCAL qboolean     rtspecial_started;
 static THREAD_LOCAL qboolean     rtspecial_foundfullbright = false;
+static THREAD_LOCAL qboolean     rtspecial_has_mat = false; // q2rtx: a .mat material was synthesized; don't clobber it
 static THREAD_LOCAL gltexture_t *rtspecial_target = NULL;
 static THREAD_LOCAL byte         rtspecial_default_rough;
 static THREAD_LOCAL byte         rtspecial_default_metallic;
@@ -273,6 +274,7 @@ void TexMgr_RT_SpecialStart (float default_rough, float default_metallic)
 	assert (rtspecial_info_albedoAlpha == NULL);
 
 	rtspecial_started = true;
+	rtspecial_has_mat = false;
 	rtspecial_default_rough = CLAMP (0, (int)(default_rough * 255), 255);
 	rtspecial_default_metallic = CLAMP (0, (int)(default_metallic * 255), 255);
 }
@@ -316,6 +318,12 @@ static void TexMgr_RT_SpecialFullbright (unsigned width, unsigned height, uint32
 
 	rtspecial_foundfullbright = true;
 
+	// q2rtx: if a .mat material was already synthesized for this texture, keep
+	// it -- it carries the correct albedo/normal/emissive/gloss. The legacy
+	// fullbright-RME material below would overwrite and discard it.
+	if (rtspecial_has_mat)
+		return;
+
 	FullbrightToRME (width, height, (byte *)fullbright);
 
 	rtspecial_info.textures.pDataAlbedoAlpha = rtspecial_info_albedoAlpha;
@@ -334,7 +342,13 @@ void TexMgr_RT_SpecialEnd ()
 	assert (rtspecial_started);
 	assert (rtspecial_target != NULL && rtspecial_info_albedoAlpha != NULL);
 
-	if (!rtspecial_foundfullbright)
+	// q2rtx: keep a synthesized .mat material; only build the plain-albedo
+	// fallback material when no .mat override was applied.
+	if (rtspecial_has_mat)
+	{
+		/* q2rtx: a synthesized .mat material is already in place; nothing to do. */
+	}
+	else if (!rtspecial_foundfullbright)
 	{
 		rtspecial_info.textures.pDataAlbedoAlpha = rtspecial_info_albedoAlpha;
 		rtspecial_info.pRelativePath = rtspecial_info_pRelativePath;
@@ -350,6 +364,7 @@ void TexMgr_RT_SpecialEnd ()
 	rtspecial_started = false;
 	rtspecial_target = NULL;
 	rtspecial_foundfullbright = false;
+	rtspecial_has_mat = false;
 	memset (&rtspecial_info, 0, sizeof (rtspecial_info));
 	rtspecial_info_albedoAlpha = NULL;
 	rtspecial_info_pRelativePath[0] = '\0';
@@ -1735,6 +1750,11 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 	Mem_Free (albedo);
 	Mem_Free (rme);
 	Mem_Free (normal);
+
+	// q2rtx: remember that a synthesized material is now in place so the
+	// legacy RTGL1 "special" (fullbright) path does not overwrite it.
+	if (rtspecial_started)
+		rtspecial_has_mat = true;
 
 	return true;
 }

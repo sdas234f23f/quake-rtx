@@ -39,7 +39,7 @@ namespace
 //  dark; it still stays well inside the FP16 HDR range.
 constexpr double RG_PI = 3.1415926535897932384626433;
 constexpr float MIN_SPHERE_RADIUS = 0.005f;
-constexpr float Q2_LIGHT_SCALE = 1.0f / 3000.0f;
+constexpr float Q2_LIGHT_SCALE = 1.0f / 600.0f;
 
 double GetSphericalLightContribution(const RgSphericalLightUploadInfo &light,
                                      const float cameraPosition[3])
