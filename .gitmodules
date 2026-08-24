@@ -1,0 +1,6 @@
+[submodule "dependencies/vkquake-rt"]
+	path = dependencies/vkquake-rt
+	url = https://github.com/sdas234f23f/vkquake-rt.git
+[submodule "dependencies/q2rtx"]
+	path = dependencies/q2rtx
+	url = https://github.com/nvidia/q2rtx.git

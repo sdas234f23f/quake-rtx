@@ -64,6 +64,10 @@ main()
 	// Composite
 	vec3 final_color = composite_color(base_color.rgb, metal_rough.r, throughput, low_freq, high_freq, specular, transparent);
 
+	// Guard against FP16 overflow in IMG_ASVGF_COLOR (R16G16B16A16F).
+	// 480 * 128 = 61440 < 65504; any larger radiance would overflow FP16
+	// and render as the green pixel shift instead of brightening.
+	final_color = min(final_color, vec3(480.0));
 	final_color *= STORAGE_SCALE_HDR;
 	
 	imageStore(IMG_ASVGF_COLOR, ipos, vec4(final_color, checkerboard_flags));

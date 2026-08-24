@@ -516,6 +516,13 @@ main()
 		low_freq.shY.xyz += bounce_contrib;
 	#endif
 
+		// Guard against FP16 overflow in IMG_PT_COLOR_LF_SH (R16G16B16A16F) /
+		// IMG_PT_COLOR_LF_COCG (R16G16F). The legacy renderer's ~8000x light
+		// amplification can push accumulated SH radiance past the ~65504 FP16
+		// limit; NaN/Inf then render as the green pixel shift.
+		low_freq.shY = clamp(low_freq.shY, vec4(-60000.0), vec4(60000.0));
+		low_freq.CoCg = clamp(low_freq.CoCg, vec2(-60000.0), vec2(60000.0));
+
 		STORE_SH(IMG_PT_COLOR_LF_SH, IMG_PT_COLOR_LF_COCG, ipos, low_freq);
 	}
 }

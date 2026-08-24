@@ -72,6 +72,15 @@ void FillUniformBuffer(QVKUniformBuffer_t &ubo, const ShGlobalUniform &src,
     ubo.time              = src.time;
     ubo.pt_reflect_refract = static_cast<int>(src.reflectRefractMaxDepth);
 
+    // Previous-frame dimensions. The memset above leaves these 0, which sends
+    // every temporal reprojection in asvgf_temporal.comp /
+    // asvgf_gradient_img.comp / asvgf_gradient_reproject.comp to pixel (0,0)
+    // and effectively disables history accumulation. Q2RTX main.c keeps the
+    // last frame's unscaled extent here; we render at a fixed size, so the
+    // current frame's extent is correct (matches invP_prev reuse below).
+    ubo.prev_width  = ubo.width;
+    ubo.prev_height = ubo.height;
+
     ubo.first_person_model = 1;
     ubo.environment_type   = 0;
 
