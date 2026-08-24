@@ -96,8 +96,8 @@ get_iqm_triangle(uint model_id, uint prim_id, int matrix_offset)
 
 		for (int i_bone = 0; i_bone < 4; i_bone++)
 		{
-			uint bone_index = (bone_indices >> (i_bone * 8)) & 0xff;
-			float bone_weight = float((bone_weights >> (i_bone * 8)) & 0xff); // skip normalization for precision
+			uint bone_index = (bone_indices >> (i_bone * 8)) & 0xffu;
+			float bone_weight = float((bone_weights >> (i_bone * 8)) & 0xffu); // skip normalization for precision
 
 			if (bone_weight > 0)
 			{

@@ -97,8 +97,8 @@ ivec2 get_input_position(out int other_side_offset)
     pos.x = int(gl_GlobalInvocationID.x / 2);
     pos.y = int(gl_GlobalInvocationID.y);
 
-    int px = int(gl_GlobalInvocationID.x & 1);
-    int py = int(gl_GlobalInvocationID.y & 1);
+    int px = int(gl_GlobalInvocationID.x & 1u);
+    int py = int(gl_GlobalInvocationID.y & 1u);
 
     other_side_offset = global_ubo.width / 2;
 

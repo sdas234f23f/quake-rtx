@@ -99,11 +99,11 @@ AF4 sharp(const ASU2 p)
     const float w = 1.0;
 
     const AF3 r = 
-        loadInput(p             )  * (1 + 4 * w) +
-        loadInput(p + ASU2( 0, 1)) * (-w) +
-        loadInput(p + ASU2( 1, 0)) * (-w) +
-        loadInput(p + ASU2( 0,-1)) * (-w) +
-        loadInput(p + ASU2(-1, 0)) * (-w);
+        loadInput(p) * AF3_(1 + 4 * w) +
+        loadInput(p + ASU2( 0, 1)) * AF3_(-w) +
+        loadInput(p + ASU2( 1, 0)) * AF3_(-w) +
+        loadInput(p + ASU2( 0,-1)) * AF3_(-w) +
+        loadInput(p + ASU2(-1, 0)) * AF3_(-w);
 
     return AF4(r, 0);
 }

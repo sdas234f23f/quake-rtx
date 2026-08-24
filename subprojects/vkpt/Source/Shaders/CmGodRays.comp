@@ -265,7 +265,7 @@ void main()
     const float rnd = rndBlueNoise8(seed, 0).x;
     offset += getStep(offset, density) * (rnd - 1.0);
 
-    while (true)
+    while (offset < rayDistance)
     {
         density = getDensity(currentPos);
         const float stepLength = getStep(offset, density);

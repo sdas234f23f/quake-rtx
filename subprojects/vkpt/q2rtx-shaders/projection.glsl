@@ -250,4 +250,6 @@ vec3 projection_screen_to_view(vec2 screen_pos, float distance, bool previous)
 	case PROJECTION_MERCATOR:
 		return mercator_reverse(screen_pos, distance, previous);
 	}
+
+	return vec3(0);
 }

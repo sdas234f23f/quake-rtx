@@ -70,11 +70,8 @@ float rand(ivec2 pos)
 
 const float PI = 3.1415926535;
 
-#define NORMALIZE_PHASE_FUNCTIONS 1
-
 float ScatterPhase_HenyeyGreenstein(float cosa, float g)
 {
-#if NORMALIZE_PHASE_FUNCTIONS
 	// "normalized" Henyey-Greenstein
 	float g_sqr = g * g;
 	float num = (1 - abs(g));
@@ -82,12 +79,6 @@ float ScatterPhase_HenyeyGreenstein(float cosa, float g)
 	float frac = num / denom;
 	float scale = g_sqr + (1 - g_sqr) / (4 * PI);
 	return scale * (frac*frac*frac);
-#else
-	// Classic Henyey-Greenstein
-	float k1 = (1.f - g * g);
-	float k2 = (1.f + g * g - 2.f*g*cosa);
-	return (1.f / (4.f*PI)) * k1 / pow(abs(k2), 1.5f);
-#endif
 }
 
 float vmin(vec3 v) { return min(v.x, min(v.y, v.z)); }
@@ -194,7 +185,7 @@ void main()
 
 	offset += getStep(offset, density) * (rand(pixelPos.xy) - 1);
 
-	while(true)
+	while(offset < distance)
 	{
 		float density = getDensity(currentPos);
 		float stepLength = getStep(offset, density);

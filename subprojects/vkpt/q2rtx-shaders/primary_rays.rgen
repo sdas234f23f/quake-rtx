@@ -333,7 +333,7 @@ main()
 			}
 			else
 			{
-				uint packed = uint(cameraUV.x * 65535) & 0xffff | ((uint(cameraUV.y * 65535) & 0xffff) << 16);
+				uint packed = uint(cameraUV.x * 65535) & 0xffffu | ((uint(cameraUV.y * 65535) & 0xffffu) << 16);
 				imageStore(IMG_PT_NORMAL_A, ipos, uvec4(packed));
 			}
 		}
@@ -399,7 +399,7 @@ main()
 	if(is_camera(material_id))
 	{
 		uint camera_id = (material_id & MATERIAL_LIGHT_STYLE_MASK) >> (MATERIAL_LIGHT_STYLE_SHIFT + 2);
-		uint packed = uint(cameraUV.x * 0x3fff) & 0x3fff | ((uint(cameraUV.y * 0x3fff) & 0x3fff) << 14) | (camera_id << 28);
+		uint packed = uint(cameraUV.x * 0x3fff) & 0x3fffu | ((uint(cameraUV.y * 0x3fff) & 0x3fffu) << 14) | (camera_id << 28);
 		imageStore(IMG_PT_NORMAL_A, ipos, uvec4(packed));
 	}
 	else
@@ -427,7 +427,7 @@ main()
 	if(triangle.cluster >= 0 && global_ubo.cluster_debug_index >= 0)
 	{
 		uint mask = light_buffer.cluster_debug_mask[triangle.cluster >> 5];
-		bool is_pvs = (mask & (1 << (triangle.cluster & 31))) != 0;
+		bool is_pvs = (mask & (1u << (triangle.cluster & 31))) != 0;
 		bool is_current = triangle.cluster == global_ubo.cluster_debug_index;
 
 		if(is_pvs || is_current)

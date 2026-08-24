@@ -29,7 +29,7 @@ layout (location = 1) out vec2 outTexCoord;
 
 layout(push_constant) uniform RasterizerVert_BT 
 {
-    layout(offset = 0) mat4 viewProj;
+    mat4 viewProj;
 } rasterizerVertInfo;
 
 layout (constant_id = 0) const uint applyVertexColorGamma = 0;

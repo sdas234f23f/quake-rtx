@@ -267,8 +267,8 @@ main()
 		uint packedUV = imageLoad(IMG_PT_NORMAL_A, ipos).x;
 
 		vec2 uv;
-		uv.x = float(packedUV & 0x3fff) / float(0x3fff);
-		uv.y = float((packedUV >> 14) & 0x3fff) / float(0x3fff);
+		uv.x = float(packedUV & 0x3fffu) / float(0x3fff);
+		uv.y = float((packedUV >> 14) & 0x3fffu) / float(0x3fff);
 
 		uint camera_id = (packedUV >> 28) & (MAX_CAMERAS - 1);
 
@@ -762,7 +762,7 @@ main()
 	if(is_camera(material_id))
 	{
 		uint camera_id = (material_id & uint(MATERIAL_LIGHT_STYLE_MASK)) >> (MATERIAL_LIGHT_STYLE_SHIFT + 2);
-		uint packed = uint(cameraUV.x * 0x3fff) & 0x3fff | ((uint(cameraUV.y * 0x3fff) & 0x3fff) << 14) | (camera_id << 28);
+		uint packed = uint(cameraUV.x * 0x3fff) & 0x3fffu | ((uint(cameraUV.y * 0x3fff) & 0x3fffu) << 14) | (camera_id << 28);
 		imageStore(IMG_PT_NORMAL_A, ipos, uvec4(packed));
 	}
 	else

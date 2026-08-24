@@ -336,6 +336,7 @@ struct SH
 
 vec3 project_SH_irradiance(SH sh, vec3 N)
 {
+    vec3 result;
 #if ENABLE_SH
     float d = dot(sh.shY.xyz, N);
     float Y = 2.0 * (1.023326 * d + 0.886226 * sh.shY.w);
@@ -348,10 +349,11 @@ vec3 project_SH_irradiance(SH sh, vec3 N)
     float   B       = T - sh.CoCg.x * 0.5;
     float   R       = B + sh.CoCg.x;
 
-    return max(vec3(R, G, B), vec3(0.0));
+    result = max(vec3(R, G, B), vec3(0.0));
 #else
-    return sh.shY.xyz;
+    result = sh.shY.xyz;
 #endif
+    return result;
 }
 
 SH irradiance_to_SH(vec3 color, vec3 dir)
@@ -468,9 +470,9 @@ vec3 unpackRGBE(uint x)
     float scale = pow(2, exponent) / 256.0;
 
     vec3 v;
-    v.r = float(x & 0x1ff) * scale;
-    v.g = float((x >> 9) & 0x1ff) * scale;
-    v.b = float((x >> 18) & 0x1ff) * scale;
+    v.r = float(x & 0x1ffu) * scale;
+    v.g = float((x >> 9) & 0x1ffu) * scale;
+    v.b = float((x >> 18) & 0x1ffu) * scale;
 
     return v;
 }

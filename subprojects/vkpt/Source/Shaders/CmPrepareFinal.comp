@@ -34,21 +34,24 @@
 layout(local_size_x = COMPUTE_COMPOSE_GROUP_SIZE_X, local_size_y = COMPUTE_COMPOSE_GROUP_SIZE_Y, local_size_z = 1) in;
 
 #define DEBUG_LPM 0
+#ifndef DEBUG_VOLUME_ILLUMINATION
+#define DEBUG_VOLUME_ILLUMINATION 0
+#endif
 
 #define A_GLSL 1
 #define A_GPU 1
-#include "ffx_a.h"
+#include "LPM/ffx_a.h"
 layout(set = DESC_SET_LPM_PARAMS, binding = BINDING_LPM_PARAMS) readonly uniform LpmParams_BT
 {
-    AU4 g_lpmParams[24];
+    uvec4 g_lpmParams[24];
 };
 #if DEBUG_LPM
-    AU4 debug_lpmParams[24];
-    void LpmSetupOut(AU1 i, inAU4 v) { debug_lpmParams[i] = v; }
-    AU4  LpmFilterCtl(AU1 i)         { return debug_lpmParams[i]; }
+    uvec4 debug_lpmParams[24];
+    void LpmSetupOut(uint i, uvec4 v) { debug_lpmParams[i] = v; }
+    uvec4  LpmFilterCtl(uint i)         { return debug_lpmParams[i]; }
 #else
     #define LPM_NO_SETUP 1
-    AU4  LpmFilterCtl(AU1 i)         { return g_lpmParams[i]; }
+    uvec4  LpmFilterCtl(uint i)         { return g_lpmParams[i]; }
 #endif
 
 vec3 uncharted2TonemapOp(const vec3 x)
@@ -166,15 +169,17 @@ vec3 applyVolumetrics( const ivec2 pix, const vec3 color )
     {
         vec3 position = globalUniform.cameraPosition.xyz + cameraRayDir * virtualdepth;
 
-#ifdef DEBUG_VOLUME_ILLUMINATION
+        vec3 result;
+#if DEBUG_VOLUME_ILLUMINATION
         vec3 sp = volume_toSamplePosition_T(
             position.xyz, globalUniform.volumeViewProj, globalUniform.cameraPosition.xyz );
         vec3 illum = textureLod( g_illuminationVolume_Sampler, sp, 0.0 ).rgb;
-        return color * illum;
-#endif
-
+        result = color * illum;
+#else
         vec4 v = volume_sampleDithered( position, rnd, 2.0 );
-        return color * v.a + v.rgb;
+        result = color * v.a + v.rgb;
+#endif
+        return result;
     }
     else
     {

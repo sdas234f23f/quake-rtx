@@ -125,11 +125,11 @@ float GetDensity(vec3 step,float raylen, float current_ray)
     vec3 uvw1 = vec3(step.xy * 0.02, w);
     vec3 uvw2 = vec3(step.xy * 0.2, w);
 
-    vec4 cloud1 = texture(TEX_SKY_CLOUDS, uvw1);
-    vec4 cloud2 = texture(TEX_SKY_CLOUDS, uvw2);
+    float cloud1 = texture(TEX_SKY_CLOUDS, uvw1).r;
+    float cloud2g = texture(TEX_SKY_CLOUDS, uvw2).g;
 
-    return cloud1.r + (cloud2.g - 0.5) * 0.1;
-    //return cloud1.r;
+    return cloud1 + (cloud2g - 0.5) * 0.1;
+    //return cloud1;
 }
 /*
     Coarse raymarching function, ignores the transmittance in the sun direction
